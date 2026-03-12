@@ -1,10 +1,12 @@
-import type { ThreadId } from "@t3tools/contracts";
+import { LOCAL_EXECUTION_TARGET_ID, type ThreadId } from "@t3tools/contracts";
+import { useQuery } from "@tanstack/react-query";
 import { useCallback } from "react";
 
 import { newCommandId } from "../lib/utils";
 import { readNativeApi } from "../nativeApi";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { useStore } from "../store";
+import { executionTargetListQueryOptions } from "../lib/executionTargetReactQuery";
 import {
   EnvMode,
   resolveDraftEnvModeAfterBranchChange,
@@ -40,8 +42,18 @@ export default function BranchToolbar({
   const activeThreadId = serverThread?.id ?? (draftThread ? threadId : undefined);
   const activeThreadBranch = serverThread?.branch ?? draftThread?.branch ?? null;
   const activeWorktreePath = serverThread?.worktreePath ?? draftThread?.worktreePath ?? null;
+  const targetId =
+    serverThread?.targetId ??
+    draftThread?.targetId ??
+    activeProject?.targetId ??
+    LOCAL_EXECUTION_TARGET_ID;
   const branchCwd = activeWorktreePath ?? activeProject?.cwd ?? null;
   const hasServerThread = serverThread !== undefined;
+  const executionTargetsQuery = useQuery(executionTargetListQueryOptions());
+  const targetLabel =
+    targetId === LOCAL_EXECUTION_TARGET_ID
+      ? "Local"
+      : (executionTargetsQuery.data?.find((target) => target.id === targetId)?.label ?? "Remote");
   const effectiveEnvMode = resolveEffectiveEnvMode({
     activeWorktreePath,
     hasServerThread,
@@ -105,6 +117,9 @@ export default function BranchToolbar({
   return (
     <div className="mx-auto flex w-full max-w-3xl items-center justify-between px-5 pb-3 pt-1">
       <div className="flex items-center gap-2">
+        <span className="border border-transparent px-[calc(--spacing(2)-1px)] text-sm font-medium text-muted-foreground/70 sm:text-xs">
+          {targetLabel}
+        </span>
         {envLocked || activeWorktreePath ? (
           <span className="border border-transparent px-[calc(--spacing(2)-1px)] text-sm font-medium text-muted-foreground/70 sm:text-xs">
             {activeWorktreePath ? "Worktree" : "Local"}
@@ -126,6 +141,7 @@ export default function BranchToolbar({
         activeProjectCwd={activeProject.cwd}
         activeThreadBranch={activeThreadBranch}
         activeWorktreePath={activeWorktreePath}
+        targetId={targetId}
         branchCwd={branchCwd}
         effectiveEnvMode={effectiveEnvMode}
         envLocked={envLocked}

@@ -65,6 +65,7 @@ const makeProviderSessionDirectory = Effect.gen(function* () {
                 Option.some({
                   threadId: value.threadId,
                   provider,
+                  targetId: value.targetId,
                   adapterKey: value.adapterKey,
                   runtimeMode: value.runtimeMode,
                   status: value.status,
@@ -98,6 +99,7 @@ const makeProviderSessionDirectory = Effect.gen(function* () {
       .upsert({
         threadId: resolvedThreadId,
         providerName: binding.provider,
+        targetId: binding.targetId ?? existingRuntime?.targetId ?? "local",
         adapterKey:
           binding.adapterKey ??
           (providerChanged ? binding.provider : (existingRuntime?.adapterKey ?? binding.provider)),

@@ -2,6 +2,7 @@
 import "../index.css";
 
 import {
+  LOCAL_EXECUTION_TARGET_ID,
   ORCHESTRATION_WS_METHODS,
   type MessageId,
   type OrchestrationReadModel,
@@ -194,6 +195,7 @@ function createSnapshotForTargetUser(options: {
         id: PROJECT_ID,
         title: "Project",
         workspaceRoot: "/repo/project",
+        targetId: LOCAL_EXECUTION_TARGET_ID,
         defaultModel: "gpt-5",
         scripts: [],
         createdAt: NOW_ISO,
@@ -205,6 +207,7 @@ function createSnapshotForTargetUser(options: {
       {
         id: THREAD_ID,
         projectId: PROJECT_ID,
+        targetId: LOCAL_EXECUTION_TARGET_ID,
         title: "Browser test thread",
         model: "gpt-5",
         interactionMode: "default",
@@ -221,6 +224,7 @@ function createSnapshotForTargetUser(options: {
         checkpoints: [],
         session: {
           threadId: THREAD_ID,
+          targetId: LOCAL_EXECUTION_TARGET_ID,
           status: "ready",
           providerName: "codex",
           runtimeMode: "full-access",
@@ -259,6 +263,7 @@ function addThreadToSnapshot(
       {
         id: threadId,
         projectId: PROJECT_ID,
+        targetId: LOCAL_EXECUTION_TARGET_ID,
         title: "New thread",
         model: "gpt-5",
         interactionMode: "default",
@@ -275,6 +280,7 @@ function addThreadToSnapshot(
         checkpoints: [],
         session: {
           threadId,
+          targetId: LOCAL_EXECUTION_TARGET_ID,
           status: "ready",
           providerName: "codex",
           runtimeMode: "full-access",
@@ -880,6 +886,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
           createdAt: NOW_ISO,
           runtimeMode: "full-access",
           interactionMode: "default",
+          targetId: LOCAL_EXECUTION_TARGET_ID,
           branch: null,
           worktreePath: null,
           envMode: "local",

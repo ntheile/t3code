@@ -19,6 +19,7 @@ import {
 } from "../Services/PTY";
 import { TerminalManagerRuntime } from "./Manager";
 import { Effect, Encoding } from "effect";
+import type { TerminalLaunchSpec } from "../Services/Manager";
 
 class FakePtyProcess implements PtyProcess {
   readonly writes: string[] = [];
@@ -182,6 +183,7 @@ describe("TerminalManager", () => {
     historyLineLimit = 5,
     options: {
       shellResolver?: () => string;
+      resolveLaunchSpec?: (targetId: string) => Promise<TerminalLaunchSpec>;
       subprocessChecker?: (terminalPid: number) => Promise<boolean>;
       subprocessPollIntervalMs?: number;
       processKillGraceMs?: number;
@@ -197,6 +199,7 @@ describe("TerminalManager", () => {
       ptyAdapter,
       historyLineLimit,
       shellResolver: options.shellResolver ?? (() => "/bin/bash"),
+      ...(options.resolveLaunchSpec ? { resolveLaunchSpec: options.resolveLaunchSpec } : {}),
       ...(options.subprocessChecker ? { subprocessChecker: options.subprocessChecker } : {}),
       ...(options.subprocessPollIntervalMs
         ? { subprocessPollIntervalMs: options.subprocessPollIntervalMs }
@@ -330,6 +333,32 @@ describe("TerminalManager", () => {
     expect(first.writes).toEqual(["pwd\n"]);
     expect(second.writes).toEqual(["ls\n"]);
     expect(ptyAdapter.spawnInputs).toHaveLength(2);
+
+    manager.dispose();
+  });
+
+  it("spawns remote terminals through ssh without validating cwd on the host machine", async () => {
+    const { manager, ptyAdapter } = makeManager(5, {
+      resolveLaunchSpec: async () =>
+        ({
+          kind: "ssh",
+          host: "example.com",
+          user: "dev",
+          port: 2222,
+        }) satisfies TerminalLaunchSpec,
+    });
+
+    await manager.open({
+      threadId: "thread-1",
+      targetId: "remote-dev",
+      cwd: "/remote/project",
+    });
+
+    expect(ptyAdapter.spawnInputs).toHaveLength(1);
+    expect(ptyAdapter.spawnInputs[0]?.shell).toBe("ssh");
+    expect(ptyAdapter.spawnInputs[0]?.args).toContain("-tt");
+    expect(ptyAdapter.spawnInputs[0]?.args).toContain("dev@example.com");
+    expect(ptyAdapter.spawnInputs[0]?.args).toContain("sh");
 
     manager.dispose();
   });

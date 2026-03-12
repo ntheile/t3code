@@ -1,3 +1,4 @@
+import { LOCAL_EXECUTION_TARGET_ID } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -69,6 +70,7 @@ describe("resolveThreadStatusPill", () => {
     lastVisitedAt: undefined,
     proposedPlans: [],
     session: {
+      targetId: LOCAL_EXECUTION_TARGET_ID,
       provider: "codex" as const,
       status: "running" as const,
       createdAt: "2026-03-09T10:00:00.000Z",

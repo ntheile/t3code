@@ -24,6 +24,21 @@ const LAUNCHER_VERSION = 1;
 const __dirname = dirname(fileURLToPath(import.meta.url));
 export const desktopDir = resolve(__dirname, "..");
 
+function resolveElectronCliShim() {
+  const candidates = [
+    join(desktopDir, "node_modules", ".bin", "electron"),
+    resolve(desktopDir, "..", "..", "node_modules", ".bin", "electron"),
+  ];
+
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
 function setPlistString(plistPath, key, value) {
   const replaceResult = spawnSync("plutil", ["-replace", key, "-string", value, plistPath], {
     encoding: "utf8",
@@ -134,7 +149,16 @@ function buildMacLauncher(electronBinaryPath) {
 
 export function resolveElectronPath() {
   const require = createRequire(import.meta.url);
-  const electronBinaryPath = require("electron");
+  let electronBinaryPath;
+  try {
+    electronBinaryPath = require("electron");
+  } catch (error) {
+    const shimPath = resolveElectronCliShim();
+    if (!shimPath) {
+      throw error;
+    }
+    return shimPath;
+  }
 
   if (process.platform !== "darwin") {
     return electronBinaryPath;

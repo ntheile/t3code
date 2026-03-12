@@ -1,6 +1,7 @@
 import {
   ApprovalRequestId,
   type ChatAttachment,
+  LOCAL_EXECUTION_TARGET_ID,
   type OrchestrationEvent,
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -362,6 +363,7 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
             projectId: event.payload.projectId,
             title: event.payload.title,
             workspaceRoot: event.payload.workspaceRoot,
+            targetId: event.payload.targetId ?? LOCAL_EXECUTION_TARGET_ID,
             defaultModel: event.payload.defaultModel,
             scripts: event.payload.scripts,
             createdAt: event.payload.createdAt,
@@ -383,6 +385,7 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
             ...(event.payload.workspaceRoot !== undefined
               ? { workspaceRoot: event.payload.workspaceRoot }
               : {}),
+            ...(event.payload.targetId !== undefined ? { targetId: event.payload.targetId } : {}),
             ...(event.payload.defaultModel !== undefined
               ? { defaultModel: event.payload.defaultModel }
               : {}),
@@ -419,6 +422,7 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
           yield* projectionThreadRepository.upsert({
             threadId: event.payload.threadId,
             projectId: event.payload.projectId,
+            targetId: event.payload.targetId ?? LOCAL_EXECUTION_TARGET_ID,
             title: event.payload.title,
             model: event.payload.model,
             runtimeMode: event.payload.runtimeMode,
@@ -756,6 +760,7 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
       }
       yield* projectionThreadSessionRepository.upsert({
         threadId: event.payload.threadId,
+        targetId: event.payload.session.targetId ?? LOCAL_EXECUTION_TARGET_ID,
         status: event.payload.session.status,
         providerName: event.payload.session.providerName,
         runtimeMode: event.payload.session.runtimeMode,

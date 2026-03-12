@@ -27,6 +27,16 @@ import {
   isCodexCliVersionSupported,
   parseCodexCliVersion,
 } from "./provider/codexCliVersion";
+import { buildSshCommand as buildBaseSshCommand } from "./executionTarget/ssh";
+import {
+  buildRemoteCodexProbeCommand,
+  buildRemoteCodexShellCommand,
+} from "./executionTarget/remoteCodex";
+
+export {
+  buildRemoteCodexProbeCommand,
+  buildRemoteCodexShellCommand,
+} from "./executionTarget/remoteCodex";
 
 type PendingRequestKey = string;
 
@@ -126,13 +136,25 @@ export interface CodexAppServerSendTurnInput {
 export interface CodexAppServerStartSessionInput {
   readonly threadId: ThreadId;
   readonly provider?: "codex";
+  readonly targetId?: ProviderSession["targetId"];
   readonly cwd?: string;
   readonly model?: string;
   readonly serviceTier?: string;
   readonly resumeCursor?: unknown;
   readonly providerOptions?: ProviderSessionStartInput["providerOptions"];
+  readonly launch?: CodexCliLaunchSpec;
   readonly runtimeMode: RuntimeMode;
 }
+
+export interface CodexCliSshLaunchSpec {
+  readonly kind: "ssh";
+  readonly host: string;
+  readonly port?: number;
+  readonly user?: string;
+  readonly password?: string;
+}
+
+export type CodexCliLaunchSpec = CodexCliSshLaunchSpec;
 
 export interface CodexThreadTurnSnapshot {
   id: TurnId;
@@ -531,6 +553,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
 
       const session: ProviderSession = {
         provider: "codex",
+        ...(input.targetId ? { targetId: input.targetId } : {}),
         status: "connecting",
         runtimeMode: input.runtimeMode,
         model: normalizeCodexModelSlug(input.model),
@@ -547,15 +570,19 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         binaryPath: codexBinaryPath,
         cwd: resolvedCwd,
         ...(codexHomePath ? { homePath: codexHomePath } : {}),
+        ...(input.launch ? { launch: input.launch } : {}),
       });
-      const child = spawn(codexBinaryPath, ["app-server"], {
+      const childLaunch = buildCodexAppServerLaunch({
+        binaryPath: codexBinaryPath,
         cwd: resolvedCwd,
-        env: {
-          ...process.env,
-          ...(codexHomePath ? { CODEX_HOME: codexHomePath } : {}),
-        },
+        ...(codexHomePath ? { homePath: codexHomePath } : {}),
+        ...(input.launch ? { launch: input.launch } : {}),
+      });
+      const child = spawn(childLaunch.command, childLaunch.args, {
+        ...(childLaunch.cwd ? { cwd: childLaunch.cwd } : {}),
+        env: childLaunch.env,
         stdio: ["pipe", "pipe", "pipe"],
-        shell: process.platform === "win32",
+        shell: childLaunch.shell ?? process.platform === "win32",
       });
       const output = readline.createInterface({ input: child.stdout });
 
@@ -1337,6 +1364,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     readonly binaryPath: string;
     readonly cwd: string;
     readonly homePath?: string;
+    readonly launch?: CodexCliLaunchSpec;
   }): void {
     assertSupportedCodexCliVersion(input);
   }
@@ -1521,19 +1549,89 @@ function readCodexProviderOptions(input: CodexAppServerStartSessionInput): {
   };
 }
 
-function assertSupportedCodexCliVersion(input: {
+function buildSshCommand(input: {
+  readonly launch: CodexCliSshLaunchSpec;
+  readonly binaryPath: string;
+  readonly cwd?: string;
+  readonly homePath?: string;
+  readonly args: ReadonlyArray<string>;
+}): { command: string; args: string[]; env: NodeJS.ProcessEnv; shell: boolean; cwd?: string } {
+  const sshCommand = buildBaseSshCommand({
+    connection: input.launch,
+    remoteScript: buildRemoteCodexShellCommand({
+      binaryPath: input.binaryPath,
+      ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
+      ...(input.homePath !== undefined ? { homePath: input.homePath } : {}),
+      args: input.args,
+    }),
+  });
+  return {
+    command: sshCommand.command,
+    args: sshCommand.args,
+    env: sshCommand.env,
+    shell: false,
+  };
+}
+
+function buildCodexAppServerLaunch(input: {
   readonly binaryPath: string;
   readonly cwd: string;
   readonly homePath?: string;
-}): void {
-  const result = spawnSync(input.binaryPath, ["--version"], {
+  readonly launch?: CodexCliLaunchSpec;
+}): { command: string; args: string[]; env: NodeJS.ProcessEnv; shell?: boolean; cwd?: string } {
+  if (input.launch?.kind === "ssh") {
+    return buildSshCommand({
+      launch: input.launch,
+      binaryPath: input.binaryPath,
+      cwd: input.cwd,
+      ...(input.homePath ? { homePath: input.homePath } : {}),
+      args: ["app-server"],
+    });
+  }
+
+  return {
+    command: input.binaryPath,
+    args: ["app-server"],
     cwd: input.cwd,
     env: {
       ...process.env,
       ...(input.homePath ? { CODEX_HOME: input.homePath } : {}),
     },
-    encoding: "utf8",
     shell: process.platform === "win32",
+  };
+}
+
+function assertSupportedCodexCliVersion(input: {
+  readonly binaryPath: string;
+  readonly cwd: string;
+  readonly homePath?: string;
+  readonly launch?: CodexCliLaunchSpec;
+}): void {
+  const versionCheckLaunch =
+    input.launch?.kind === "ssh"
+      ? buildSshCommand({
+          launch: input.launch,
+          binaryPath: input.binaryPath,
+          cwd: input.cwd,
+          ...(input.homePath ? { homePath: input.homePath } : {}),
+          args: ["--version"],
+        })
+      : {
+          command: input.binaryPath,
+          args: ["--version"],
+          cwd: input.cwd,
+          env: {
+            ...process.env,
+            ...(input.homePath ? { CODEX_HOME: input.homePath } : {}),
+          },
+          shell: process.platform === "win32",
+        };
+
+  const result = spawnSync(versionCheckLaunch.command, versionCheckLaunch.args, {
+    ...(versionCheckLaunch.cwd ? { cwd: versionCheckLaunch.cwd } : {}),
+    env: versionCheckLaunch.env,
+    encoding: "utf8",
+    shell: versionCheckLaunch.shell,
     stdio: ["ignore", "pipe", "pipe"],
     timeout: CODEX_VERSION_CHECK_TIMEOUT_MS,
     maxBuffer: 1024 * 1024,

@@ -10,6 +10,7 @@
  * @module ProviderServiceLive
  */
 import {
+  LOCAL_EXECUTION_TARGET_ID,
   NonNegativeInt,
   ThreadId,
   ProviderInterruptTurnInput,
@@ -91,6 +92,7 @@ function toRuntimePayloadFromSession(
   extra?: { readonly providerOptions?: unknown },
 ): Record<string, unknown> {
   return {
+    targetId: session.targetId ?? LOCAL_EXECUTION_TARGET_ID,
     cwd: session.cwd ?? null,
     model: session.model ?? null,
     activeTurnId: session.activeTurnId ?? null,
@@ -155,6 +157,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
       directory.upsert({
         threadId,
         provider: session.provider,
+        targetId: session.targetId ?? LOCAL_EXECUTION_TARGET_ID,
         runtimeMode: session.runtimeMode,
         status: toRuntimeStatus(session),
         ...(session.resumeCursor !== undefined ? { resumeCursor: session.resumeCursor } : {}),
@@ -218,6 +221,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         const resumed = yield* adapter.startSession({
           threadId: input.binding.threadId,
           provider: input.binding.provider,
+          targetId: input.binding.targetId ?? LOCAL_EXECUTION_TARGET_ID,
           ...(persistedCwd ? { cwd: persistedCwd } : {}),
           ...(persistedProviderOptions ? { providerOptions: persistedProviderOptions } : {}),
           ...(hasResumeCursor ? { resumeCursor: input.binding.resumeCursor } : {}),
@@ -459,12 +463,16 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           const overrides: {
             resumeCursor?: ProviderSession["resumeCursor"];
             runtimeMode?: ProviderSession["runtimeMode"];
+            targetId?: ProviderSession["targetId"];
           } = {};
           if (session.resumeCursor === undefined && binding.resumeCursor !== undefined) {
             overrides.resumeCursor = binding.resumeCursor;
           }
           if (binding.runtimeMode !== undefined) {
             overrides.runtimeMode = binding.runtimeMode;
+          }
+          if (binding.targetId !== undefined) {
+            overrides.targetId = binding.targetId;
           }
           return Object.assign({}, session, overrides);
         });

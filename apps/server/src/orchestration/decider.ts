@@ -1,3 +1,4 @@
+import { LOCAL_EXECUTION_TARGET_ID } from "@t3tools/contracts";
 import type {
   OrchestrationCommand,
   OrchestrationEvent,
@@ -77,6 +78,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           projectId: command.projectId,
           title: command.title,
           workspaceRoot: command.workspaceRoot,
+          targetId: command.targetId ?? LOCAL_EXECUTION_TARGET_ID,
           defaultModel: command.defaultModel ?? null,
           scripts: [],
           createdAt: command.createdAt,
@@ -104,6 +106,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           projectId: command.projectId,
           ...(command.title !== undefined ? { title: command.title } : {}),
           ...(command.workspaceRoot !== undefined ? { workspaceRoot: command.workspaceRoot } : {}),
+          ...(command.targetId !== undefined ? { targetId: command.targetId } : {}),
           ...(command.defaultModel !== undefined ? { defaultModel: command.defaultModel } : {}),
           ...(command.scripts !== undefined ? { scripts: command.scripts } : {}),
           updatedAt: occurredAt,
@@ -155,6 +158,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           projectId: command.projectId,
+          targetId: command.targetId ?? LOCAL_EXECUTION_TARGET_ID,
           title: command.title,
           model: command.model,
           runtimeMode: command.runtimeMode,

@@ -1,6 +1,7 @@
 import "../index.css";
 
 import {
+  LOCAL_EXECUTION_TARGET_ID,
   ORCHESTRATION_WS_METHODS,
   type MessageId,
   type OrchestrationReadModel,
@@ -64,6 +65,7 @@ function createMinimalSnapshot(): OrchestrationReadModel {
         id: PROJECT_ID,
         title: "Project",
         workspaceRoot: "/repo/project",
+        targetId: LOCAL_EXECUTION_TARGET_ID,
         defaultModel: "gpt-5",
         scripts: [],
         createdAt: NOW_ISO,
@@ -75,6 +77,7 @@ function createMinimalSnapshot(): OrchestrationReadModel {
       {
         id: THREAD_ID,
         projectId: PROJECT_ID,
+        targetId: LOCAL_EXECUTION_TARGET_ID,
         title: "Test thread",
         model: "gpt-5",
         interactionMode: "default",
@@ -101,6 +104,7 @@ function createMinimalSnapshot(): OrchestrationReadModel {
         checkpoints: [],
         session: {
           threadId: THREAD_ID,
+          targetId: LOCAL_EXECUTION_TARGET_ID,
           status: "ready",
           providerName: "codex",
           runtimeMode: "full-access",

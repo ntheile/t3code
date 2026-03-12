@@ -7,7 +7,9 @@
  * @module ProjectionThreadRepository
  */
 import {
+  ExecutionTargetId,
   IsoDateTime,
+  LOCAL_EXECUTION_TARGET_ID,
   ProjectId,
   ProviderInteractionMode,
   RuntimeMode,
@@ -22,6 +24,7 @@ import type { ProjectionRepositoryError } from "../Errors.ts";
 export const ProjectionThread = Schema.Struct({
   threadId: ThreadId,
   projectId: ProjectId,
+  targetId: ExecutionTargetId.pipe(Schema.withDecodingDefault(() => LOCAL_EXECUTION_TARGET_ID)),
   title: Schema.String,
   model: Schema.String,
   runtimeMode: RuntimeMode,

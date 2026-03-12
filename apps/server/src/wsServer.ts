@@ -7,13 +7,18 @@
  * @module Server
  */
 import http from "node:http";
+import os from "node:os";
+import nodePath from "node:path";
 import type { Duplex } from "node:stream";
 
 import Mime from "@effect/platform-node/Mime";
 import {
+  ProjectListDirectoryResult,
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
+  LOCAL_EXECUTION_TARGET_ID,
   type ClientOrchestrationCommand,
+  type ExecutionTarget,
   type OrchestrationCommand,
   ORCHESTRATION_WS_CHANNELS,
   ORCHESTRATION_WS_METHODS,
@@ -46,10 +51,16 @@ import {
 import { WebSocketServer, type WebSocket } from "ws";
 
 import { createLogger } from "./logger";
-import { GitManager } from "./git/Services/GitManager.ts";
+import { GitManager, type GitManagerShape } from "./git/Services/GitManager.ts";
 import { TerminalManager } from "./terminal/Services/Manager.ts";
+import { PortForwardManager } from "./portForward/Services/PortForwardManager.ts";
 import { Keybindings } from "./keybindings";
-import { searchWorkspaceEntries } from "./workspaceEntries";
+import {
+  buildWorkspaceEntriesFromFilePaths,
+  listWorkspaceDirectories,
+  searchWorkspaceEntries,
+  searchWorkspaceEntriesInIndex,
+} from "./workspaceEntries";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery";
 import { OrchestrationReactor } from "./orchestration/Services/OrchestrationReactor";
@@ -59,7 +70,14 @@ import { CheckpointDiffQuery } from "./checkpointing/Services/CheckpointDiffQuer
 import { clamp } from "effect/Number";
 import { Open, resolveAvailableEditors } from "./open";
 import { ServerConfig } from "./config";
-import { GitCore } from "./git/Services/GitCore.ts";
+import { GitCore, type GitCoreShape } from "./git/Services/GitCore.ts";
+import { GitCoreLive } from "./git/Layers/GitCore.ts";
+import { GitManagerLive } from "./git/Layers/GitManager.ts";
+import { GitService, type GitServiceShape } from "./git/Services/GitService.ts";
+import { GitCommandError } from "./git/Errors.ts";
+import { GitHubCli, type GitHubCliShape } from "./git/Services/GitHubCli.ts";
+import { TextGeneration } from "./git/Services/TextGeneration.ts";
+import { makeGitHubCliShape, normalizeGitHubCliError } from "./git/makeGitHubCli.ts";
 import { tryHandleProjectFaviconRequest } from "./projectFaviconRoute";
 import {
   ATTACHMENTS_ROUTE_PREFIX,
@@ -78,6 +96,9 @@ import { expandHomePath } from "./os-jank.ts";
 import { makeServerPushBus } from "./wsServer/pushBus.ts";
 import { makeServerReadiness } from "./wsServer/readiness.ts";
 import { decodeJsonResult, formatSchemaError } from "@t3tools/shared/schemaJson";
+import { ExecutionTargetService } from "./executionTarget/Services/ExecutionTargetService.ts";
+import { runTargetProcess } from "./executionTarget/targetProcess.ts";
+import { buildRemoteShellScript, shellQuote } from "./executionTarget/ssh.ts";
 
 /**
  * ServerShape - Service API for server lifecycle control.
@@ -157,6 +178,22 @@ function toPosixRelativePath(input: string): string {
   return input.replaceAll("\\", "/");
 }
 
+function posixParentPath(input: string): string | undefined {
+  const normalized = nodePath.posix.normalize(input);
+  const parent = nodePath.posix.dirname(normalized);
+  return parent === normalized ? undefined : parent;
+}
+
+function stripRemoteDirectoryPrefix(input: string): string {
+  if (input === ".") {
+    return "";
+  }
+  if (input.startsWith("./")) {
+    return input.slice(2);
+  }
+  return input;
+}
+
 function resolveWorkspaceWritePath(params: {
   workspaceRoot: string;
   relativePath: string;
@@ -214,10 +251,13 @@ export type ServerRuntimeServices =
   | ServerCoreRuntimeServices
   | GitManager
   | GitCore
+  | TextGeneration
   | TerminalManager
+  | PortForwardManager
   | Keybindings
   | Open
-  | AnalyticsService;
+  | AnalyticsService
+  | ExecutionTargetService;
 
 export class ServerLifecycleError extends Schema.TaggedErrorClass<ServerLifecycleError>()(
   "ServerLifecycleError",
@@ -252,11 +292,14 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
   const gitManager = yield* GitManager;
   const terminalManager = yield* TerminalManager;
+  const portForwardManager = yield* PortForwardManager;
   const keybindingsManager = yield* Keybindings;
   const providerHealth = yield* ProviderHealth;
   const git = yield* GitCore;
+  const textGeneration = yield* TextGeneration;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  const executionTargets = yield* ExecutionTargetService;
 
   yield* keybindingsManager.syncDefaultKeybindingsOnStartup.pipe(
     Effect.catch((error) =>
@@ -269,6 +312,193 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   );
 
   const providerStatuses = yield* providerHealth.getStatuses;
+
+  const resolveExecutionTarget = (targetId: string | undefined) =>
+    executionTargets.getByIdForRuntime(targetId ?? LOCAL_EXECUTION_TARGET_ID).pipe(
+      Effect.mapError(
+        (cause) =>
+          new RouteRequestError({
+            message: cause.message,
+          }),
+      ),
+    );
+
+  const resolveWorkspaceDirectory = Effect.fnUntraced(function* (input: {
+    readonly targetId?: string;
+    readonly cwd?: string;
+  }) {
+    const target = yield* resolveExecutionTarget(input.targetId);
+
+    if (target.connection.kind === "local") {
+      const normalizedWorkspaceRoot = path.resolve(
+        yield* expandHomePath(input.cwd?.trim() || os.homedir()),
+      );
+      const workspaceStat = yield* fileSystem
+        .stat(normalizedWorkspaceRoot)
+        .pipe(Effect.catch(() => Effect.succeed(null)));
+      if (!workspaceStat) {
+        return yield* new RouteRequestError({
+          message: `Project directory does not exist: ${normalizedWorkspaceRoot}`,
+        });
+      }
+      if (workspaceStat.type !== "Directory") {
+        return yield* new RouteRequestError({
+          message: `Project path is not a directory: ${normalizedWorkspaceRoot}`,
+        });
+      }
+      return {
+        target,
+        cwd: normalizedWorkspaceRoot,
+      };
+    }
+
+    const resolvedPathResult = yield* Effect.tryPromise({
+      try: () =>
+        runTargetProcess({
+          target,
+          command: "sh",
+          args:
+            input.cwd && input.cwd.trim().length > 0
+              ? ["-lc", 'cd "$1" && pwd -P', "t3code-path", input.cwd.trim()]
+              : ["-lc", 'printf "%s" "$HOME"'],
+          allowNonZeroExit: true,
+          timeoutMs: 10_000,
+          maxBufferBytes: 16 * 1024,
+        }),
+      catch: (cause) =>
+        new RouteRequestError({
+          message: `Failed to resolve remote directory: ${String(cause)}`,
+        }),
+    });
+    if (resolvedPathResult.code !== 0) {
+      return yield* new RouteRequestError({
+        message: `Project directory does not exist on target '${target.label}'.`,
+      });
+    }
+
+    const resolvedPath = resolvedPathResult.stdout.trim();
+    if (resolvedPath.length === 0) {
+      return yield* new RouteRequestError({
+        message: `Unable to resolve a directory on target '${target.label}'.`,
+      });
+    }
+
+    return {
+      target,
+      cwd: resolvedPath,
+    };
+  });
+
+  const makeTargetGitService = (target: ExecutionTarget): GitServiceShape => ({
+    execute: (input) =>
+      Effect.tryPromise({
+        try: async () => {
+          const normalizedEnv =
+            input.env === undefined
+              ? undefined
+              : Object.fromEntries(
+                  Object.entries(input.env).filter(
+                    (entry): entry is [string, string] => typeof entry[1] === "string",
+                  ),
+                );
+          const result = await runTargetProcess({
+            target,
+            command: "git",
+            args: input.args,
+            cwd: input.cwd,
+            ...(normalizedEnv ? { env: normalizedEnv } : {}),
+            ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+            allowNonZeroExit: true,
+            ...(input.maxOutputBytes !== undefined ? { maxBufferBytes: input.maxOutputBytes } : {}),
+          });
+          return {
+            code: result.code ?? 1,
+            stdout: result.stdout,
+            stderr: result.stderr,
+          };
+        },
+        catch: (cause) =>
+          new GitCommandError({
+            operation: input.operation,
+            command: `git ${input.args.join(" ")}`,
+            cwd: input.cwd,
+            detail: cause instanceof Error ? cause.message : "Remote git command execution failed.",
+            cause,
+          }),
+      }),
+  });
+
+  const makeTargetGitHubCli = (target: ExecutionTarget): GitHubCliShape => {
+    const execute: GitHubCliShape["execute"] = (input) =>
+      Effect.tryPromise({
+        try: () =>
+          runTargetProcess({
+            target,
+            command: "gh",
+            args: input.args,
+            cwd: input.cwd,
+            ...(input.stdin !== undefined ? { stdin: input.stdin } : {}),
+            ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+          }),
+        catch: (error) => normalizeGitHubCliError("execute", error),
+      });
+
+    return makeGitHubCliShape(execute);
+  };
+
+  const targetGitCoreById = new Map<string, GitCoreShape>();
+  const targetGitManagerById = new Map<string, GitManagerShape>();
+
+  const getTargetGitCore = (
+    target: ExecutionTarget,
+  ): Effect.Effect<GitCoreShape, never, GitCore | FileSystem.FileSystem | Path.Path> => {
+    if (target.connection.kind === "local") {
+      return Effect.gen(function* () {
+        return yield* GitCore;
+      });
+    }
+
+    return Effect.gen(function* () {
+      const cached = targetGitCoreById.get(target.id);
+      if (cached) {
+        return cached;
+      }
+
+      const services = yield* Effect.scoped(
+        Layer.build(
+          GitCoreLive.pipe(Layer.provide(Layer.succeed(GitService, makeTargetGitService(target)))),
+        ),
+      );
+      const remoteGitCore = ServiceMap.getUnsafe(services, GitCore);
+      targetGitCoreById.set(target.id, remoteGitCore);
+      return remoteGitCore;
+    });
+  };
+
+  const getTargetGitManager = Effect.fnUntraced(function* (target: ExecutionTarget) {
+    if (target.connection.kind === "local") {
+      return gitManager;
+    }
+
+    const cached = targetGitManagerById.get(target.id);
+    if (cached) {
+      return cached;
+    }
+
+    const targetGitCore = yield* getTargetGitCore(target);
+    const services = yield* Effect.scoped(
+      Layer.build(
+        GitManagerLive.pipe(
+          Layer.provide(Layer.succeed(TextGeneration, textGeneration)),
+          Layer.provide(Layer.succeed(GitHubCli, makeTargetGitHubCli(target))),
+          Layer.provide(Layer.succeed(GitCore, targetGitCore)),
+        ),
+      ),
+    );
+    const remoteGitManager = ServiceMap.getUnsafe(services, GitManager);
+    targetGitManagerById.set(target.id, remoteGitManager);
+    return remoteGitManager;
+  });
 
   const clients = yield* Ref.make(new Set<WebSocket>());
   const logger = createLogger("ws");
@@ -299,35 +529,27 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const normalizeDispatchCommand = Effect.fnUntraced(function* (input: {
     readonly command: ClientOrchestrationCommand;
   }) {
-    const normalizeProjectWorkspaceRoot = Effect.fnUntraced(function* (workspaceRoot: string) {
-      const normalizedWorkspaceRoot = path.resolve(yield* expandHomePath(workspaceRoot.trim()));
-      const workspaceStat = yield* fileSystem
-        .stat(normalizedWorkspaceRoot)
-        .pipe(Effect.catch(() => Effect.succeed(null)));
-      if (!workspaceStat) {
-        return yield* new RouteRequestError({
-          message: `Project directory does not exist: ${normalizedWorkspaceRoot}`,
-        });
-      }
-      if (workspaceStat.type !== "Directory") {
-        return yield* new RouteRequestError({
-          message: `Project path is not a directory: ${normalizedWorkspaceRoot}`,
-        });
-      }
-      return normalizedWorkspaceRoot;
-    });
-
     if (input.command.type === "project.create") {
+      const resolvedWorkspace = yield* resolveWorkspaceDirectory({
+        ...(input.command.targetId ? { targetId: input.command.targetId } : {}),
+        cwd: input.command.workspaceRoot,
+      });
       return {
         ...input.command,
-        workspaceRoot: yield* normalizeProjectWorkspaceRoot(input.command.workspaceRoot),
+        workspaceRoot: resolvedWorkspace.cwd,
+        targetId: resolvedWorkspace.target.id,
       } satisfies OrchestrationCommand;
     }
 
     if (input.command.type === "project.meta.update" && input.command.workspaceRoot !== undefined) {
+      const resolvedWorkspace = yield* resolveWorkspaceDirectory({
+        ...(input.command.targetId ? { targetId: input.command.targetId } : {}),
+        cwd: input.command.workspaceRoot,
+      });
       return {
         ...input.command,
-        workspaceRoot: yield* normalizeProjectWorkspaceRoot(input.command.workspaceRoot),
+        workspaceRoot: resolvedWorkspace.cwd,
+        targetId: resolvedWorkspace.target.id,
       } satisfies OrchestrationCommand;
     }
 
@@ -693,6 +915,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     (event) => void Effect.runPromise(pushBus.publishAll(WS_CHANNELS.terminalEvent, event)),
   );
   yield* Effect.addFinalizer(() => Effect.sync(() => unsubscribeTerminalEvents()));
+  const unsubscribePortForwardEvents = yield* portForwardManager.subscribe(
+    (event) => void Effect.runPromise(pushBus.publishAll(WS_CHANNELS.portForwardEvent, event)),
+  );
+  yield* Effect.addFinalizer(() => Effect.sync(() => unsubscribePortForwardEvents()));
   yield* readiness.markTerminalSubscriptionsReady;
 
   yield* NodeHttpServer.make(() => httpServer, listenOptions).pipe(
@@ -739,24 +965,148 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
       case WS_METHODS.projectsSearchEntries: {
         const body = stripRequestTag(request.body);
-        return yield* Effect.tryPromise({
-          try: () => searchWorkspaceEntries(body),
+        const target = yield* resolveExecutionTarget(body.targetId);
+        if (target.connection.kind === "local") {
+          return yield* Effect.tryPromise({
+            try: () => searchWorkspaceEntries(body),
+            catch: (cause) =>
+              new RouteRequestError({
+                message: `Failed to search workspace entries: ${String(cause)}`,
+              }),
+          });
+        }
+
+        const listedFiles = yield* Effect.tryPromise({
+          try: () =>
+            runTargetProcess({
+              target,
+              command: "git",
+              args: ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+              cwd: body.cwd,
+              allowNonZeroExit: true,
+              timeoutMs: 20_000,
+              maxBufferBytes: 16 * 1024 * 1024,
+              outputMode: "truncate",
+            }),
           catch: (cause) =>
             new RouteRequestError({
-              message: `Failed to search workspace entries: ${String(cause)}`,
+              message: `Failed to search remote workspace entries: ${String(cause)}`,
             }),
         });
+        if (listedFiles.code !== 0) {
+          return yield* new RouteRequestError({
+            message: "Remote workspace search currently requires a Git worktree.",
+          });
+        }
+
+        const filePaths = listedFiles.stdout
+          .split("\0")
+          .filter((entry) => entry.length > 0)
+          .map((entry) => entry.replaceAll("\\", "/"));
+        return searchWorkspaceEntriesInIndex({
+          entries: buildWorkspaceEntriesFromFilePaths(filePaths),
+          query: body.query,
+          limit: body.limit,
+          truncated: Boolean(listedFiles.stdoutTruncated),
+        });
+      }
+
+      case WS_METHODS.projectsListDirectory: {
+        const body = stripRequestTag(request.body);
+        const resolvedDirectory = yield* resolveWorkspaceDirectory({
+          ...(body.targetId ? { targetId: body.targetId } : {}),
+          ...(body.cwd ? { cwd: body.cwd } : {}),
+        });
+
+        if (resolvedDirectory.target.connection.kind === "local") {
+          return yield* Effect.tryPromise({
+            try: () => listWorkspaceDirectories({ cwd: resolvedDirectory.cwd }),
+            catch: (cause) =>
+              new RouteRequestError({
+                message: `Failed to list workspace directories: ${String(cause)}`,
+              }),
+          });
+        }
+
+        const listedDirectories = yield* Effect.tryPromise({
+          try: () =>
+            runTargetProcess({
+              target: resolvedDirectory.target,
+              command: "find",
+              args: [".", "-mindepth", "1", "-maxdepth", "1", "-type", "d", "-print0"],
+              cwd: resolvedDirectory.cwd,
+              allowNonZeroExit: true,
+              timeoutMs: 20_000,
+              maxBufferBytes: 4 * 1024 * 1024,
+            }),
+          catch: (cause) =>
+            new RouteRequestError({
+              message: `Failed to list remote workspace directories: ${String(cause)}`,
+            }),
+        });
+        if (listedDirectories.code !== 0) {
+          return yield* new RouteRequestError({
+            message: `Failed to list directories on target '${resolvedDirectory.target.label}'.`,
+          });
+        }
+
+        const entryNames = listedDirectories.stdout
+          .split("\0")
+          .map(stripRemoteDirectoryPrefix)
+          .filter((entry) => entry.length > 0)
+          .toSorted((left, right) => left.localeCompare(right));
+        const result: ProjectListDirectoryResult = {
+          cwd: resolvedDirectory.cwd,
+          ...(posixParentPath(resolvedDirectory.cwd)
+            ? { parentCwd: posixParentPath(resolvedDirectory.cwd) }
+            : {}),
+          entries: entryNames.map((entry) => ({
+            name: nodePath.posix.basename(entry),
+            path: nodePath.posix.join(resolvedDirectory.cwd, entry),
+          })),
+        };
+        return result;
       }
 
       case WS_METHODS.projectsWriteFile: {
         const body = stripRequestTag(request.body);
-        const target = yield* resolveWorkspaceWritePath({
+        const executionTarget = yield* resolveExecutionTarget(body.targetId);
+        const writeTarget = yield* resolveWorkspaceWritePath({
           workspaceRoot: body.cwd,
           relativePath: body.relativePath,
           path,
         });
+        if (executionTarget.connection.kind !== "local") {
+          const normalizedRelativePath = writeTarget.relativePath.replaceAll("\\", "/");
+          const remoteDirectory = normalizedRelativePath.includes("/")
+            ? normalizedRelativePath.slice(0, normalizedRelativePath.lastIndexOf("/"))
+            : ".";
+          yield* Effect.tryPromise({
+            try: () =>
+              runTargetProcess({
+                target: executionTarget,
+                command: "sh",
+                args: [
+                  "-lc",
+                  buildRemoteShellScript({
+                    cwd: body.cwd,
+                    command: [
+                      `mkdir -p ${shellQuote(remoteDirectory === "." ? "." : remoteDirectory)}`,
+                      `cat > ${shellQuote(normalizedRelativePath)}`,
+                    ].join(" && "),
+                  }),
+                ],
+                stdin: body.contents,
+              }),
+            catch: (cause) =>
+              new RouteRequestError({
+                message: `Failed to write remote workspace file: ${String(cause)}`,
+              }),
+          });
+          return { relativePath: writeTarget.relativePath };
+        }
         yield* fileSystem
-          .makeDirectory(path.dirname(target.absolutePath), { recursive: true })
+          .makeDirectory(path.dirname(writeTarget.absolutePath), { recursive: true })
           .pipe(
             Effect.mapError(
               (cause) =>
@@ -765,7 +1115,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
                 }),
             ),
           );
-        yield* fileSystem.writeFileString(target.absolutePath, body.contents).pipe(
+        yield* fileSystem.writeFileString(writeTarget.absolutePath, body.contents).pipe(
           Effect.mapError(
             (cause) =>
               new RouteRequestError({
@@ -773,7 +1123,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               }),
           ),
         );
-        return { relativePath: target.relativePath };
+        return { relativePath: writeTarget.relativePath };
       }
 
       case WS_METHODS.shellOpenInEditor: {
@@ -783,57 +1133,82 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
       case WS_METHODS.gitStatus: {
         const body = stripRequestTag(request.body);
-        return yield* gitManager.status(body);
+        const target = yield* resolveExecutionTarget(body.targetId);
+        const targetGitManager = yield* getTargetGitManager(target);
+        return yield* targetGitManager.status(body);
       }
 
       case WS_METHODS.gitPull: {
         const body = stripRequestTag(request.body);
-        return yield* git.pullCurrentBranch(body.cwd);
+        const target = yield* resolveExecutionTarget(body.targetId);
+        if (target.connection.kind === "local") {
+          return yield* git.pullCurrentBranch(body.cwd);
+        }
+        const targetGitCore = yield* getTargetGitCore(target);
+        return yield* targetGitCore.pullCurrentBranch(body.cwd);
       }
 
       case WS_METHODS.gitRunStackedAction: {
         const body = stripRequestTag(request.body);
-        return yield* gitManager.runStackedAction(body);
+        const target = yield* resolveExecutionTarget(body.targetId);
+        const targetGitManager = yield* getTargetGitManager(target);
+        return yield* targetGitManager.runStackedAction(body);
       }
 
       case WS_METHODS.gitResolvePullRequest: {
         const body = stripRequestTag(request.body);
-        return yield* gitManager.resolvePullRequest(body);
+        const target = yield* resolveExecutionTarget(body.targetId);
+        const targetGitManager = yield* getTargetGitManager(target);
+        return yield* targetGitManager.resolvePullRequest(body);
       }
 
       case WS_METHODS.gitPreparePullRequestThread: {
         const body = stripRequestTag(request.body);
-        return yield* gitManager.preparePullRequestThread(body);
+        const target = yield* resolveExecutionTarget(body.targetId);
+        const targetGitManager = yield* getTargetGitManager(target);
+        return yield* targetGitManager.preparePullRequestThread(body);
       }
 
       case WS_METHODS.gitListBranches: {
         const body = stripRequestTag(request.body);
-        return yield* git.listBranches(body);
+        const target = yield* resolveExecutionTarget(body.targetId);
+        const targetGitCore = yield* getTargetGitCore(target);
+        return yield* targetGitCore.listBranches(body);
       }
 
       case WS_METHODS.gitCreateWorktree: {
         const body = stripRequestTag(request.body);
-        return yield* git.createWorktree(body);
+        const target = yield* resolveExecutionTarget(body.targetId);
+        const targetGitCore = yield* getTargetGitCore(target);
+        return yield* targetGitCore.createWorktree(body);
       }
 
       case WS_METHODS.gitRemoveWorktree: {
         const body = stripRequestTag(request.body);
-        return yield* git.removeWorktree(body);
+        const target = yield* resolveExecutionTarget(body.targetId);
+        const targetGitCore = yield* getTargetGitCore(target);
+        return yield* targetGitCore.removeWorktree(body);
       }
 
       case WS_METHODS.gitCreateBranch: {
         const body = stripRequestTag(request.body);
-        return yield* git.createBranch(body);
+        const target = yield* resolveExecutionTarget(body.targetId);
+        const targetGitCore = yield* getTargetGitCore(target);
+        return yield* targetGitCore.createBranch(body);
       }
 
       case WS_METHODS.gitCheckout: {
         const body = stripRequestTag(request.body);
-        return yield* Effect.scoped(git.checkoutBranch(body));
+        const target = yield* resolveExecutionTarget(body.targetId);
+        const targetGitCore = yield* getTargetGitCore(target);
+        return yield* Effect.scoped(targetGitCore.checkoutBranch(body));
       }
 
       case WS_METHODS.gitInit: {
         const body = stripRequestTag(request.body);
-        return yield* git.initRepo(body);
+        const target = yield* resolveExecutionTarget(body.targetId);
+        const targetGitCore = yield* getTargetGitCore(target);
+        return yield* targetGitCore.initRepo(body);
       }
 
       case WS_METHODS.terminalOpen: {
@@ -866,6 +1241,21 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return yield* terminalManager.close(body);
       }
 
+      case WS_METHODS.portForwardOpen: {
+        const body = stripRequestTag(request.body);
+        return yield* portForwardManager.open(body);
+      }
+
+      case WS_METHODS.portForwardList: {
+        const body = stripRequestTag(request.body);
+        return yield* portForwardManager.list(body);
+      }
+
+      case WS_METHODS.portForwardClose: {
+        const body = stripRequestTag(request.body);
+        return yield* portForwardManager.close(body);
+      }
+
       case WS_METHODS.serverGetConfig:
         const keybindingsConfig = yield* keybindingsManager.loadConfigState;
         return {
@@ -881,6 +1271,24 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         const body = stripRequestTag(request.body);
         const keybindingsConfig = yield* keybindingsManager.upsertKeybindingRule(body);
         return { keybindings: keybindingsConfig, issues: [] };
+      }
+
+      case WS_METHODS.executionTargetList:
+        return yield* executionTargets.list();
+
+      case WS_METHODS.executionTargetUpsert: {
+        const body = stripRequestTag(request.body);
+        return yield* executionTargets.upsert(body);
+      }
+
+      case WS_METHODS.executionTargetRemove: {
+        const body = stripRequestTag(request.body);
+        return yield* executionTargets.remove(body);
+      }
+
+      case WS_METHODS.executionTargetCheckHealth: {
+        const body = stripRequestTag(request.body);
+        return yield* executionTargets.checkHealth(body);
       }
 
       default: {

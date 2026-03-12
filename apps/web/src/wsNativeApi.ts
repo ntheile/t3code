@@ -111,7 +111,15 @@ export function createWsNativeApi(): NativeApi {
       onEvent: (callback) =>
         transport.subscribe(WS_CHANNELS.terminalEvent, (message) => callback(message.data)),
     },
+    portForward: {
+      open: (input) => transport.request(WS_METHODS.portForwardOpen, input),
+      list: (input = {}) => transport.request(WS_METHODS.portForwardList, input),
+      close: (input) => transport.request(WS_METHODS.portForwardClose, input),
+      onEvent: (callback) =>
+        transport.subscribe(WS_CHANNELS.portForwardEvent, (message) => callback(message.data)),
+    },
     projects: {
+      listDirectory: (input) => transport.request(WS_METHODS.projectsListDirectory, input),
       searchEntries: (input) => transport.request(WS_METHODS.projectsSearchEntries, input),
       writeFile: (input) => transport.request(WS_METHODS.projectsWriteFile, input),
     },
@@ -160,6 +168,11 @@ export function createWsNativeApi(): NativeApi {
     server: {
       getConfig: () => transport.request(WS_METHODS.serverGetConfig),
       upsertKeybinding: (input) => transport.request(WS_METHODS.serverUpsertKeybinding, input),
+      listExecutionTargets: () => transport.request(WS_METHODS.executionTargetList, {}),
+      upsertExecutionTarget: (input) => transport.request(WS_METHODS.executionTargetUpsert, input),
+      removeExecutionTarget: (input) => transport.request(WS_METHODS.executionTargetRemove, input),
+      checkExecutionTargetHealth: (input) =>
+        transport.request(WS_METHODS.executionTargetCheckHealth, input),
     },
     orchestration: {
       getSnapshot: () => transport.request(ORCHESTRATION_WS_METHODS.getSnapshot),

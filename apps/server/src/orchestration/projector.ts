@@ -1,4 +1,9 @@
-import type { OrchestrationEvent, OrchestrationReadModel, ThreadId } from "@t3tools/contracts";
+import {
+  LOCAL_EXECUTION_TARGET_ID,
+  type OrchestrationEvent,
+  type OrchestrationReadModel,
+  type ThreadId,
+} from "@t3tools/contracts";
 import {
   OrchestrationCheckpointSummary,
   OrchestrationMessage,
@@ -181,6 +186,7 @@ export function projectEvent(
             id: payload.projectId,
             title: payload.title,
             workspaceRoot: payload.workspaceRoot,
+            targetId: payload.targetId ?? LOCAL_EXECUTION_TARGET_ID,
             defaultModel: payload.defaultModel,
             scripts: payload.scripts,
             createdAt: payload.createdAt,
@@ -211,6 +217,7 @@ export function projectEvent(
                   ...(payload.workspaceRoot !== undefined
                     ? { workspaceRoot: payload.workspaceRoot }
                     : {}),
+                  ...(payload.targetId !== undefined ? { targetId: payload.targetId } : {}),
                   ...(payload.defaultModel !== undefined
                     ? { defaultModel: payload.defaultModel }
                     : {}),
@@ -251,6 +258,7 @@ export function projectEvent(
           {
             id: payload.threadId,
             projectId: payload.projectId,
+            targetId: payload.targetId ?? LOCAL_EXECUTION_TARGET_ID,
             title: payload.title,
             model: payload.model,
             runtimeMode: payload.runtimeMode,

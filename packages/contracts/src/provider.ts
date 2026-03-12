@@ -1,5 +1,6 @@
 import { Schema } from "effect";
 import { TrimmedNonEmptyString } from "./baseSchemas";
+import { ExecutionTargetId, LOCAL_EXECUTION_TARGET_ID } from "./executionTarget";
 import { ProviderModelOptions } from "./model";
 import {
   ApprovalRequestId,
@@ -34,6 +35,9 @@ const ProviderSessionStatus = Schema.Literals([
 
 export const ProviderSession = Schema.Struct({
   provider: ProviderKind,
+  targetId: Schema.optional(
+    ExecutionTargetId.pipe(Schema.withDecodingDefault(() => LOCAL_EXECUTION_TARGET_ID)),
+  ),
   status: ProviderSessionStatus,
   runtimeMode: RuntimeMode,
   cwd: Schema.optional(TrimmedNonEmptyStringSchema),
@@ -60,6 +64,9 @@ export type ProviderStartOptions = typeof ProviderStartOptions.Type;
 export const ProviderSessionStartInput = Schema.Struct({
   threadId: ThreadId,
   provider: Schema.optional(ProviderKind),
+  targetId: Schema.optional(
+    ExecutionTargetId.pipe(Schema.withDecodingDefault(() => LOCAL_EXECUTION_TARGET_ID)),
+  ),
   cwd: Schema.optional(TrimmedNonEmptyStringSchema),
   model: Schema.optional(TrimmedNonEmptyStringSchema),
   modelOptions: Schema.optional(ProviderModelOptions),

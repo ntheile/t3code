@@ -3,6 +3,8 @@ import {
   DEFAULT_MODEL_BY_PROVIDER,
   EDITORS,
   type EditorId,
+  type ExecutionTargetId,
+  LOCAL_EXECUTION_TARGET_ID,
   type KeybindingCommand,
   type CodexReasoningEffort,
   type MessageId,
@@ -128,6 +130,7 @@ import {
 import ChatMarkdown from "./ChatMarkdown";
 import PlanSidebar from "./PlanSidebar";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
+import ThreadPortForwardPanel from "./ThreadPortForwardPanel";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "./ui/alert";
 import {
   BotIcon,
@@ -331,6 +334,7 @@ function buildLocalDraftThread(
     id: threadId,
     codexThreadId: null,
     projectId: draftThread.projectId,
+    targetId: draftThread.targetId,
     title: "New thread",
     model: fallbackModel,
     runtimeMode: draftThread.runtimeMode,
@@ -761,6 +765,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const canCheckoutPullRequestIntoThread = isLocalDraftThread;
   const diffOpen = rawSearch.diff === "1";
   const activeThreadId = activeThread?.id ?? null;
+  const activeTargetId = activeThread?.targetId ?? LOCAL_EXECUTION_TARGET_ID;
   const activeLatestTurn = activeThread?.latestTurn ?? null;
   const latestTurnSettled = isLatestTurnSettled(activeLatestTurn, activeThread?.session ?? null);
   const activeProject = projects.find((p) => p.id === activeThread?.projectId);
@@ -790,8 +795,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
       }
       const storedDraftThread = getDraftThreadByProjectId(activeProject.id);
       if (storedDraftThread) {
-        setDraftThreadContext(storedDraftThread.threadId, input);
-        setProjectDraftThreadId(activeProject.id, storedDraftThread.threadId, input);
+        const nextInput = { ...input, targetId: activeProject.targetId };
+        setDraftThreadContext(storedDraftThread.threadId, nextInput);
+        setProjectDraftThreadId(activeProject.id, storedDraftThread.threadId, nextInput);
         if (storedDraftThread.threadId !== threadId) {
           await navigate({
             to: "/$threadId",
@@ -803,8 +809,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
 
       const activeDraftThread = getDraftThread(threadId);
       if (!isServerThread && activeDraftThread?.projectId === activeProject.id) {
-        setDraftThreadContext(threadId, input);
-        setProjectDraftThreadId(activeProject.id, threadId, input);
+        const nextInput = { ...input, targetId: activeProject.targetId };
+        setDraftThreadContext(threadId, nextInput);
+        setProjectDraftThreadId(activeProject.id, threadId, nextInput);
         return;
       }
 
@@ -814,6 +821,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
         createdAt: new Date().toISOString(),
         runtimeMode: DEFAULT_RUNTIME_MODE,
         interactionMode: DEFAULT_INTERACTION_MODE,
+        targetId: activeProject.targetId,
         ...input,
       });
       await navigate({
@@ -907,6 +915,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
     return Object.keys(codexOptions).length > 0 ? { codex: codexOptions } : undefined;
   }, [selectedCodexFastModeEnabled, selectedEffort, selectedProvider, supportsReasoningEffort]);
   const providerOptionsForDispatch = useMemo(() => {
+    if (activeTargetId !== LOCAL_EXECUTION_TARGET_ID) {
+      return undefined;
+    }
     if (!settings.codexBinaryPath && !settings.codexHomePath) {
       return undefined;
     }
@@ -916,7 +927,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
         ...(settings.codexHomePath ? { homePath: settings.codexHomePath } : {}),
       },
     };
-  }, [settings.codexBinaryPath, settings.codexHomePath]);
+  }, [activeTargetId, settings.codexBinaryPath, settings.codexHomePath]);
   const selectedModelForPicker = selectedModel;
   const modelOptionsByProvider = useMemo(
     () => getCustomModelOptionsByProvider(settings),
@@ -1267,11 +1278,14 @@ export default function ChatView({ threadId }: ChatViewProps) {
     (debouncerState) => ({ isPending: debouncerState.isPending }),
   );
   const effectivePathQuery = pathTriggerQuery.length > 0 ? debouncedPathQuery : "";
-  const branchesQuery = useQuery(gitBranchesQueryOptions(gitCwd));
+  const branchesQuery = useQuery(
+    gitBranchesQueryOptions({ cwd: gitCwd, targetId: activeTargetId }),
+  );
   const serverConfigQuery = useQuery(serverConfigQueryOptions());
   const workspaceEntriesQuery = useQuery(
     projectSearchEntriesQueryOptions({
       cwd: gitCwd,
+      targetId: activeTargetId,
       query: effectivePathQuery,
       enabled: isPathTrigger,
       limit: 80,
@@ -1482,18 +1496,24 @@ export default function ChatView({ threadId }: ChatViewProps) {
       const api = readNativeApi();
       if (!activeThreadId || !api) return;
       const isFinalTerminal = terminalState.terminalIds.length <= 1;
+      const targetId = activeThread?.targetId ?? LOCAL_EXECUTION_TARGET_ID;
       const fallbackExitWrite = () =>
         api.terminal
-          .write({ threadId: activeThreadId, terminalId, data: "exit\n" })
+          .write({ threadId: activeThreadId, targetId, terminalId, data: "exit\n" })
           .catch(() => undefined);
       if ("close" in api.terminal && typeof api.terminal.close === "function") {
         void (async () => {
           if (isFinalTerminal) {
             await api.terminal
-              .clear({ threadId: activeThreadId, terminalId })
+              .clear({ threadId: activeThreadId, targetId, terminalId })
               .catch(() => undefined);
           }
-          await api.terminal.close({ threadId: activeThreadId, terminalId, deleteHistory: true });
+          await api.terminal.close({
+            threadId: activeThreadId,
+            targetId,
+            terminalId,
+            deleteHistory: true,
+          });
         })().catch(() => fallbackExitWrite());
       } else {
         void fallbackExitWrite();
@@ -1501,7 +1521,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       storeCloseTerminal(activeThreadId, terminalId);
       setTerminalFocusRequestId((value) => value + 1);
     },
-    [activeThreadId, storeCloseTerminal, terminalState.terminalIds.length],
+    [activeThread?.targetId, activeThreadId, storeCloseTerminal, terminalState.terminalIds.length],
   );
   const runProjectScript = useCallback(
     async (
@@ -1555,6 +1575,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       const openTerminalInput: Parameters<typeof api.terminal.open>[0] = shouldCreateNewTerminal
         ? {
             threadId: activeThreadId,
+            targetId: activeThread.targetId ?? LOCAL_EXECUTION_TARGET_ID,
             terminalId: targetTerminalId,
             cwd: targetCwd,
             env: runtimeEnv,
@@ -1563,6 +1584,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
           }
         : {
             threadId: activeThreadId,
+            targetId: activeThread.targetId ?? LOCAL_EXECUTION_TARGET_ID,
             terminalId: targetTerminalId,
             cwd: targetCwd,
             env: runtimeEnv,
@@ -1572,6 +1594,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
         await api.terminal.open(openTerminalInput);
         await api.terminal.write({
           threadId: activeThreadId,
+          targetId: activeThread.targetId ?? LOCAL_EXECUTION_TARGET_ID,
           terminalId: targetTerminalId,
           data: `${script.command}\r`,
         });
@@ -2662,6 +2685,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
         const newBranch = buildTemporaryWorktreeBranchName();
         const result = await createWorktreeMutation.mutateAsync({
           cwd: activeProject.cwd,
+          targetId: activeTargetId,
           branch: baseBranchForWorktree,
           newBranch,
         });
@@ -2706,6 +2730,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
           commandId: newCommandId(),
           threadId: threadIdForSend,
           projectId: activeProject.id,
+          targetId: activeThread.targetId ?? LOCAL_EXECUTION_TARGET_ID,
           title,
           model: threadCreateModel,
           runtimeMode,
@@ -3139,6 +3164,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
         commandId: newCommandId(),
         threadId: nextThreadId,
         projectId: activeProject.id,
+        targetId: activeThread.targetId ?? LOCAL_EXECUTION_TARGET_ID,
         title: nextThreadTitle,
         model: nextThreadModel,
         runtimeMode,
@@ -3552,6 +3578,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       >
         <ChatHeader
           activeThreadId={activeThread.id}
+          targetId={activeTargetId}
           activeThreadTitle={activeThread.title}
           activeProjectName={activeProject?.name}
           isGitRepo={isGitRepo}
@@ -3622,6 +3649,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
               markdownCwd={gitCwd ?? undefined}
               resolvedTheme={resolvedTheme}
               workspaceRoot={activeProject?.cwd ?? undefined}
+              targetId={activeTargetId}
             />
           </div>
 
@@ -4122,6 +4150,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
               key={pullRequestDialogState.key}
               open
               cwd={activeProject?.cwd ?? null}
+              targetId={activeTargetId}
               initialReference={pullRequestDialogState.initialReference}
               onOpenChange={(open) => {
                 if (!open) {
@@ -4141,6 +4170,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
             activeProposedPlan={activeProposedPlan}
             markdownCwd={gitCwd ?? undefined}
             workspaceRoot={activeProject?.cwd ?? undefined}
+            targetId={activeTargetId}
             onClose={() => {
               setPlanSidebarOpen(false);
               // Track that the user explicitly dismissed for this turn so auto-open won't fight them.
@@ -4159,26 +4189,33 @@ export default function ChatView({ threadId }: ChatViewProps) {
           return null;
         }
         return (
-          <ThreadTerminalDrawer
-            key={activeThread.id}
-            threadId={activeThread.id}
-            cwd={gitCwd ?? activeProject.cwd}
-            runtimeEnv={threadTerminalRuntimeEnv}
-            height={terminalState.terminalHeight}
-            terminalIds={terminalState.terminalIds}
-            activeTerminalId={terminalState.activeTerminalId}
-            terminalGroups={terminalState.terminalGroups}
-            activeTerminalGroupId={terminalState.activeTerminalGroupId}
-            focusRequestId={terminalFocusRequestId}
-            onSplitTerminal={splitTerminal}
-            onNewTerminal={createNewTerminal}
-            splitShortcutLabel={splitTerminalShortcutLabel ?? undefined}
-            newShortcutLabel={newTerminalShortcutLabel ?? undefined}
-            closeShortcutLabel={closeTerminalShortcutLabel ?? undefined}
-            onActiveTerminalChange={activateTerminal}
-            onCloseTerminal={closeTerminal}
-            onHeightChange={setTerminalHeight}
-          />
+          <>
+            <ThreadTerminalDrawer
+              key={activeThread.id}
+              threadId={activeThread.id}
+              targetId={activeThread.targetId ?? LOCAL_EXECUTION_TARGET_ID}
+              cwd={gitCwd ?? activeProject.cwd}
+              runtimeEnv={threadTerminalRuntimeEnv}
+              height={terminalState.terminalHeight}
+              terminalIds={terminalState.terminalIds}
+              activeTerminalId={terminalState.activeTerminalId}
+              terminalGroups={terminalState.terminalGroups}
+              activeTerminalGroupId={terminalState.activeTerminalGroupId}
+              focusRequestId={terminalFocusRequestId}
+              onSplitTerminal={splitTerminal}
+              onNewTerminal={createNewTerminal}
+              splitShortcutLabel={splitTerminalShortcutLabel ?? undefined}
+              newShortcutLabel={newTerminalShortcutLabel ?? undefined}
+              closeShortcutLabel={closeTerminalShortcutLabel ?? undefined}
+              onActiveTerminalChange={activateTerminal}
+              onCloseTerminal={closeTerminal}
+              onHeightChange={setTerminalHeight}
+            />
+            <ThreadPortForwardPanel
+              threadId={activeThread.id}
+              targetId={activeThread.targetId ?? LOCAL_EXECUTION_TARGET_ID}
+            />
+          </>
         );
       })()}
 
@@ -4255,6 +4292,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
 
 interface ChatHeaderProps {
   activeThreadId: ThreadId;
+  targetId: ExecutionTargetId;
   activeThreadTitle: string;
   activeProjectName: string | undefined;
   isGitRepo: boolean;
@@ -4275,6 +4313,7 @@ interface ChatHeaderProps {
 
 const ChatHeader = memo(function ChatHeader({
   activeThreadId,
+  targetId,
   activeThreadTitle,
   activeProjectName,
   isGitRepo,
@@ -4332,7 +4371,9 @@ const ChatHeader = memo(function ChatHeader({
             openInCwd={openInCwd}
           />
         )}
-        {activeProjectName && <GitActionsControl gitCwd={gitCwd} activeThreadId={activeThreadId} />}
+        {activeProjectName && (
+          <GitActionsControl gitCwd={gitCwd} activeThreadId={activeThreadId} targetId={targetId} />
+        )}
         <Tooltip>
           <TooltipTrigger
             render={
@@ -4866,10 +4907,12 @@ const ProposedPlanCard = memo(function ProposedPlanCard({
   planMarkdown,
   cwd,
   workspaceRoot,
+  targetId,
 }: {
   planMarkdown: string;
   cwd: string | undefined;
   workspaceRoot: string | undefined;
+  targetId: ExecutionTargetId;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [isSaveDialogOpen, setIsSaveDialogOpen] = useState(false);
@@ -4906,6 +4949,7 @@ const ProposedPlanCard = memo(function ProposedPlanCard({
   const handleSaveToWorkspace = () => {
     const api = readNativeApi();
     const relativePath = savePath.trim();
+    const resolvedTargetId = targetId ?? undefined;
     if (!api || !workspaceRoot) {
       return;
     }
@@ -4921,6 +4965,7 @@ const ProposedPlanCard = memo(function ProposedPlanCard({
     void api.projects
       .writeFile({
         cwd: workspaceRoot,
+        ...(resolvedTargetId ? { targetId: resolvedTargetId } : {}),
         relativePath,
         contents: saveContents,
       })
@@ -5067,6 +5112,7 @@ interface MessagesTimelineProps {
   markdownCwd: string | undefined;
   resolvedTheme: "light" | "dark";
   workspaceRoot: string | undefined;
+  targetId: ExecutionTargetId;
 }
 
 type TimelineEntry = ReturnType<typeof deriveTimelineEntries>[number];
@@ -5121,6 +5167,7 @@ const MessagesTimeline = memo(function MessagesTimeline({
   markdownCwd,
   resolvedTheme,
   workspaceRoot,
+  targetId,
 }: MessagesTimelineProps) {
   const timelineRootRef = useRef<HTMLDivElement | null>(null);
   const [timelineWidthPx, setTimelineWidthPx] = useState<number | null>(null);
@@ -5576,6 +5623,7 @@ const MessagesTimeline = memo(function MessagesTimeline({
             planMarkdown={row.proposedPlan.planMarkdown}
             cwd={markdownCwd}
             workspaceRoot={workspaceRoot}
+            targetId={targetId}
           />
         </div>
       )}

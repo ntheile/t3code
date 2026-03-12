@@ -2,6 +2,7 @@ import {
   type ChatAttachment,
   CommandId,
   EventId,
+  LOCAL_EXECUTION_TARGET_ID,
   type OrchestrationEvent,
   type ProviderModelOptions,
   type ProviderKind,
@@ -20,6 +21,7 @@ import { GitCore } from "../../git/Services/GitCore.ts";
 import { ProviderAdapterRequestError, ProviderServiceError } from "../../provider/Errors.ts";
 import { TextGeneration } from "../../git/Services/TextGeneration.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
+import { ProviderSessionDirectory } from "../../provider/Services/ProviderSessionDirectory.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import {
   ProviderCommandReactor,
@@ -120,6 +122,7 @@ function buildGeneratedWorktreeBranchName(raw: string): string {
 const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const providerService = yield* ProviderService;
+  const providerSessionDirectory = yield* ProviderSessionDirectory;
   const git = yield* GitCore;
   const textGeneration = yield* TextGeneration;
   const handledTurnStartKeys = yield* Cache.make<string, true>({
@@ -228,6 +231,7 @@ const make = Effect.gen(function* () {
         ...((input?.provider ?? preferredProvider)
           ? { provider: input?.provider ?? preferredProvider }
           : {}),
+        targetId: thread.targetId ?? LOCAL_EXECUTION_TARGET_ID,
         ...(effectiveCwd ? { cwd: effectiveCwd } : {}),
         ...(desiredModel ? { model: desiredModel } : {}),
         ...(options?.modelOptions !== undefined ? { modelOptions: options.modelOptions } : {}),
@@ -243,6 +247,7 @@ const make = Effect.gen(function* () {
         threadId,
         session: {
           threadId,
+          targetId: session.targetId ?? LOCAL_EXECUTION_TARGET_ID,
           status: mapProviderSessionStatusToOrchestrationStatus(session.status),
           providerName: session.provider,
           runtimeMode: desiredRuntimeMode,
@@ -257,6 +262,10 @@ const make = Effect.gen(function* () {
     const existingSessionThreadId =
       thread.session && thread.session.status !== "stopped" ? thread.id : null;
     if (existingSessionThreadId) {
+      const persistedBindingOption = yield* providerSessionDirectory
+        .getBinding(existingSessionThreadId)
+        .pipe(Effect.orElseSucceed(() => Option.none()));
+      const persistedBinding = Option.getOrUndefined(persistedBindingOption);
       const runtimeModeChanged = thread.runtimeMode !== thread.session?.runtimeMode;
       const providerChanged =
         options?.provider !== undefined && options.provider !== currentProvider;
@@ -267,15 +276,21 @@ const make = Effect.gen(function* () {
           : (yield* providerService.getCapabilities(currentProvider)).sessionModelSwitch;
       const modelChanged = options?.model !== undefined && options.model !== activeSession?.model;
       const shouldRestartForModelChange = modelChanged && sessionModelSwitch === "restart-session";
+      const canReuseExistingSession = activeSession !== undefined || persistedBinding !== undefined;
 
-      if (!runtimeModeChanged && !providerChanged && !shouldRestartForModelChange) {
+      if (
+        canReuseExistingSession &&
+        !runtimeModeChanged &&
+        !providerChanged &&
+        !shouldRestartForModelChange
+      ) {
         return existingSessionThreadId;
       }
 
       const resumeCursor =
         providerChanged || shouldRestartForModelChange
           ? undefined
-          : (activeSession?.resumeCursor ?? undefined);
+          : (activeSession?.resumeCursor ?? persistedBinding?.resumeCursor ?? undefined);
       yield* Effect.logInfo("provider command reactor restarting provider session", {
         threadId,
         existingSessionThreadId,
@@ -287,6 +302,8 @@ const make = Effect.gen(function* () {
         providerChanged,
         modelChanged,
         shouldRestartForModelChange,
+        hasPersistedBinding: persistedBinding !== undefined,
+        hasActiveSession: activeSession !== undefined,
         hasResumeCursor: resumeCursor !== undefined,
       });
       const restartedSession = yield* startProviderSession({
@@ -604,6 +621,7 @@ const make = Effect.gen(function* () {
       threadId: thread.id,
       session: {
         threadId: thread.id,
+        targetId: thread.session?.targetId ?? thread.targetId ?? LOCAL_EXECUTION_TARGET_ID,
         status: "stopped",
         providerName: thread.session?.providerName ?? null,
         runtimeMode: thread.session?.runtimeMode ?? DEFAULT_RUNTIME_MODE,

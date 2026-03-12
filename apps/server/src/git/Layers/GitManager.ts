@@ -1,7 +1,6 @@
-import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 
-import { Effect, FileSystem, Layer, Path } from "effect";
+import { Effect, Layer } from "effect";
 import {
   resolveAutoFeatureBranchName,
   sanitizeBranchFragment,
@@ -432,11 +431,6 @@ export const makeGitManager = Effect.gen(function* () {
         }),
       ),
     );
-  const fileSystem = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-
-  const tempDir = process.env.TMPDIR ?? process.env.TEMP ?? process.env.TMP ?? "/tmp";
-
   const readConfigValueNullable = (cwd: string, key: string) =>
     gitCore.readConfigValue(cwd, key).pipe(Effect.catch(() => Effect.succeed(null)));
 
@@ -747,23 +741,19 @@ export const makeGitManager = Effect.gen(function* () {
         diffPatch: limitContext(rangeContext.diffPatch, 60_000),
       });
 
-      const bodyFile = path.join(tempDir, `t3code-pr-body-${process.pid}-${randomUUID()}.md`);
-      yield* fileSystem
-        .writeFileString(bodyFile, generated.body)
-        .pipe(
-          Effect.mapError((cause) =>
-            gitManagerError("runPrStep", "Failed to write pull request body temp file.", cause),
-          ),
-        );
       yield* gitHubCli
         .createPullRequest({
           cwd,
           baseBranch,
           headSelector: headContext.preferredHeadSelector,
           title: generated.title,
-          bodyFile,
+          body: generated.body,
         })
-        .pipe(Effect.ensuring(fileSystem.remove(bodyFile).pipe(Effect.catch(() => Effect.void))));
+        .pipe(
+          Effect.mapError((cause) =>
+            gitManagerError("runPrStep", "Failed to create pull request.", cause),
+          ),
+        );
 
       const created = yield* findOpenPr(cwd, headContext.headSelectors);
       if (!created) {

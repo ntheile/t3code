@@ -6,6 +6,8 @@
  * @module ProviderSessionRuntimeRepository
  */
 import {
+  ExecutionTargetId,
+  LOCAL_EXECUTION_TARGET_ID,
   IsoDateTime,
   ProviderSessionRuntimeStatus,
   RuntimeMode,
@@ -19,6 +21,7 @@ import type { ProviderSessionRuntimeRepositoryError } from "../Errors.ts";
 export const ProviderSessionRuntime = Schema.Struct({
   threadId: ThreadId,
   providerName: Schema.String,
+  targetId: ExecutionTargetId.pipe(Schema.withDecodingDefault(() => LOCAL_EXECUTION_TARGET_ID)),
   adapterKey: Schema.String,
   runtimeMode: RuntimeMode,
   status: ProviderSessionRuntimeStatus,

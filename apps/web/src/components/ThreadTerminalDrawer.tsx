@@ -1,6 +1,10 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { Plus, SquareSplitHorizontal, TerminalSquare, Trash2, XIcon } from "lucide-react";
-import { type ThreadId } from "@t3tools/contracts";
+import {
+  LOCAL_EXECUTION_TARGET_ID,
+  type ExecutionTargetId,
+  type ThreadId,
+} from "@t3tools/contracts";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import {
   type PointerEvent as ReactPointerEvent,
@@ -109,6 +113,7 @@ function terminalThemeFromApp(): ITheme {
 
 interface TerminalViewportProps {
   threadId: ThreadId;
+  targetId: ExecutionTargetId;
   terminalId: string;
   cwd: string;
   runtimeEnv?: Record<string, string>;
@@ -121,6 +126,7 @@ interface TerminalViewportProps {
 
 function TerminalViewport({
   threadId,
+  targetId,
   terminalId,
   cwd,
   runtimeEnv,
@@ -169,7 +175,7 @@ function TerminalViewport({
       const activeTerminal = terminalRef.current;
       if (!activeTerminal) return;
       try {
-        await api.terminal.write({ threadId, terminalId, data });
+        await api.terminal.write({ threadId, targetId, terminalId, data });
       } catch (error) {
         writeSystemMessage(activeTerminal, error instanceof Error ? error.message : fallbackError);
       }
@@ -250,7 +256,7 @@ function TerminalViewport({
 
     const inputDisposable = terminal.onData((data) => {
       void api.terminal
-        .write({ threadId, terminalId, data })
+        .write({ threadId, targetId, terminalId, data })
         .catch((err) =>
           writeSystemMessage(
             terminal,
@@ -278,6 +284,7 @@ function TerminalViewport({
         activeFitAddon.fit();
         const snapshot = await api.terminal.open({
           threadId,
+          targetId,
           terminalId,
           cwd,
           cols: activeTerminal.cols,
@@ -370,6 +377,7 @@ function TerminalViewport({
       void api.terminal
         .resize({
           threadId,
+          targetId,
           terminalId,
           cols: activeTerminal.cols,
           rows: activeTerminal.rows,
@@ -392,7 +400,7 @@ function TerminalViewport({
     // autoFocus is intentionally omitted;
     // it is only read at mount time and must not trigger terminal teardown/recreation.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cwd, runtimeEnv, terminalId, threadId]);
+  }, [cwd, runtimeEnv, targetId, terminalId, threadId]);
 
   useEffect(() => {
     if (!autoFocus) return;
@@ -420,6 +428,7 @@ function TerminalViewport({
       void api.terminal
         .resize({
           threadId,
+          targetId,
           terminalId,
           cols: terminal.cols,
           rows: terminal.rows,
@@ -429,12 +438,13 @@ function TerminalViewport({
     return () => {
       window.cancelAnimationFrame(frame);
     };
-  }, [drawerHeight, resizeEpoch, terminalId, threadId]);
+  }, [drawerHeight, resizeEpoch, targetId, terminalId, threadId]);
   return <div ref={containerRef} className="h-full w-full overflow-hidden rounded-[4px]" />;
 }
 
 interface ThreadTerminalDrawerProps {
   threadId: ThreadId;
+  targetId: ExecutionTargetId;
   cwd: string;
   runtimeEnv?: Record<string, string>;
   height: number;
@@ -484,6 +494,7 @@ function TerminalActionButton({ label, className, onClick, children }: TerminalA
 
 export default function ThreadTerminalDrawer({
   threadId,
+  targetId = LOCAL_EXECUTION_TARGET_ID,
   cwd,
   runtimeEnv,
   height,
@@ -802,6 +813,7 @@ export default function ThreadTerminalDrawer({
                     <div className="h-full p-1">
                       <TerminalViewport
                         threadId={threadId}
+                        targetId={targetId}
                         terminalId={terminalId}
                         cwd={cwd}
                         {...(runtimeEnv ? { runtimeEnv } : {})}
@@ -820,6 +832,7 @@ export default function ThreadTerminalDrawer({
                 <TerminalViewport
                   key={resolvedActiveTerminalId}
                   threadId={threadId}
+                  targetId={targetId}
                   terminalId={resolvedActiveTerminalId}
                   cwd={cwd}
                   {...(runtimeEnv ? { runtimeEnv } : {})}

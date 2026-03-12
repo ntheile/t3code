@@ -19,12 +19,27 @@ import type {
   GitStatusResult,
 } from "./git";
 import type {
+  ProjectListDirectoryInput,
+  ProjectListDirectoryResult,
   ProjectSearchEntriesInput,
   ProjectSearchEntriesResult,
   ProjectWriteFileInput,
   ProjectWriteFileResult,
 } from "./project";
 import type { ServerConfig } from "./server";
+import type {
+  ExecutionTarget,
+  ExecutionTargetCheckHealthInput,
+  ExecutionTargetRemoveInput,
+  ExecutionTargetUpsertInput,
+} from "./executionTarget";
+import type {
+  PortForwardCloseInput,
+  PortForwardEvent,
+  PortForwardListInput,
+  PortForwardOpenInput,
+  PortForwardSession,
+} from "./portForward";
 import type {
   TerminalClearInput,
   TerminalCloseInput,
@@ -125,7 +140,14 @@ export interface NativeApi {
     close: (input: TerminalCloseInput) => Promise<void>;
     onEvent: (callback: (event: TerminalEvent) => void) => () => void;
   };
+  portForward: {
+    open: (input: PortForwardOpenInput) => Promise<PortForwardSession>;
+    list: (input?: PortForwardListInput) => Promise<ReadonlyArray<PortForwardSession>>;
+    close: (input: PortForwardCloseInput) => Promise<void>;
+    onEvent: (callback: (event: PortForwardEvent) => void) => () => void;
+  };
   projects: {
+    listDirectory: (input: ProjectListDirectoryInput) => Promise<ProjectListDirectoryResult>;
     searchEntries: (input: ProjectSearchEntriesInput) => Promise<ProjectSearchEntriesResult>;
     writeFile: (input: ProjectWriteFileInput) => Promise<ProjectWriteFileResult>;
   };
@@ -159,6 +181,12 @@ export interface NativeApi {
   server: {
     getConfig: () => Promise<ServerConfig>;
     upsertKeybinding: (input: ServerUpsertKeybindingInput) => Promise<ServerUpsertKeybindingResult>;
+    listExecutionTargets: () => Promise<ReadonlyArray<ExecutionTarget>>;
+    upsertExecutionTarget: (input: ExecutionTargetUpsertInput) => Promise<ExecutionTarget>;
+    removeExecutionTarget: (input: ExecutionTargetRemoveInput) => Promise<void>;
+    checkExecutionTargetHealth: (
+      input: ExecutionTargetCheckHealthInput,
+    ) => Promise<ExecutionTarget>;
   };
   orchestration: {
     getSnapshot: () => Promise<OrchestrationReadModel>;
