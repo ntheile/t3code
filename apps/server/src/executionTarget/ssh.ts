@@ -90,7 +90,16 @@ export function buildSshCommand(input: {
     args: [
       ...(shouldUseBatchMode ? ["-o", "BatchMode=yes"] : []),
       ...(input.connection.password
-        ? ["-o", "BatchMode=no", "-o", "NumberOfPasswordPrompts=1"]
+        ? [
+            "-o",
+            "BatchMode=no",
+            "-o",
+            "NumberOfPasswordPrompts=1",
+            "-o",
+            "PreferredAuthentications=password,keyboard-interactive",
+            "-o",
+            "PubkeyAuthentication=no",
+          ]
         : []),
       ...(input.connection.port !== undefined ? ["-p", String(input.connection.port)] : []),
       ...(input.allocateTty === true ? ["-tt"] : []),

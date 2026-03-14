@@ -1,13 +1,13 @@
 import {
   type EditorId,
-  type ProjectScript,
   type ResolvedKeybindingsConfig,
   type ExecutionTargetId,
+  type ProjectScript,
   type ThreadId,
 } from "@t3tools/contracts";
 import { memo } from "react";
 import GitActionsControl from "../GitActionsControl";
-import { DiffIcon } from "lucide-react";
+import { DiffIcon, TerminalSquare } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import ProjectScriptsControl, { type NewProjectScriptInput } from "../ProjectScriptsControl";
@@ -26,6 +26,8 @@ interface ChatHeaderProps {
   keybindings: ResolvedKeybindingsConfig;
   availableEditors: ReadonlyArray<EditorId>;
   diffToggleShortcutLabel: string | null;
+  terminalOpen: boolean;
+  terminalToggleShortcutLabel: string | null;
   gitCwd: string | null;
   targetId: ExecutionTargetId;
   diffOpen: boolean;
@@ -33,6 +35,7 @@ interface ChatHeaderProps {
   onAddProjectScript: (input: NewProjectScriptInput) => Promise<void>;
   onUpdateProjectScript: (scriptId: string, input: NewProjectScriptInput) => Promise<void>;
   onDeleteProjectScript: (scriptId: string) => Promise<void>;
+  onToggleTerminal: () => void;
   onToggleDiff: () => void;
 }
 
@@ -47,6 +50,8 @@ export const ChatHeader = memo(function ChatHeader({
   keybindings,
   availableEditors,
   diffToggleShortcutLabel,
+  terminalOpen,
+  terminalToggleShortcutLabel,
   gitCwd,
   targetId,
   diffOpen,
@@ -54,6 +59,7 @@ export const ChatHeader = memo(function ChatHeader({
   onAddProjectScript,
   onUpdateProjectScript,
   onDeleteProjectScript,
+  onToggleTerminal,
   onToggleDiff,
 }: ChatHeaderProps) {
   return (
@@ -98,6 +104,29 @@ export const ChatHeader = memo(function ChatHeader({
         )}
         {activeProjectName && (
           <GitActionsControl gitCwd={gitCwd} activeThreadId={activeThreadId} targetId={targetId} />
+        )}
+        {activeProjectName && (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Toggle
+                  className="shrink-0"
+                  pressed={terminalOpen}
+                  onPressedChange={onToggleTerminal}
+                  aria-label="Toggle project terminal"
+                  variant="outline"
+                  size="xs"
+                >
+                  <TerminalSquare className="size-3" />
+                </Toggle>
+              }
+            />
+            <TooltipPopup side="bottom">
+              {terminalToggleShortcutLabel
+                ? `Toggle project terminal (${terminalToggleShortcutLabel})`
+                : "Toggle project terminal"}
+            </TooltipPopup>
+          </Tooltip>
         )}
         <Tooltip>
           <TooltipTrigger

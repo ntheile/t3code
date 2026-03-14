@@ -1040,6 +1040,10 @@ export default function ChatView({ threadId }: ChatViewProps) {
     () => shortcutLabelForCommand(keybindings, "terminal.close"),
     [keybindings],
   );
+  const terminalToggleShortcutLabel = useMemo(
+    () => shortcutLabelForCommand(keybindings, "terminal.toggle"),
+    [keybindings],
+  );
   const diffPanelShortcutLabel = useMemo(
     () => shortcutLabelForCommand(keybindings, "diff.toggle"),
     [keybindings],
@@ -3249,6 +3253,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
           keybindings={keybindings}
           availableEditors={availableEditors}
           diffToggleShortcutLabel={diffPanelShortcutLabel}
+          terminalOpen={terminalState.terminalOpen}
+          terminalToggleShortcutLabel={terminalToggleShortcutLabel}
           gitCwd={gitCwd}
           targetId={activeTargetId}
           diffOpen={diffOpen}
@@ -3258,6 +3264,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
           onAddProjectScript={saveProjectScript}
           onUpdateProjectScript={updateProjectScript}
           onDeleteProjectScript={deleteProjectScript}
+          onToggleTerminal={toggleTerminalVisibility}
           onToggleDiff={onToggleDiff}
         />
       </header>

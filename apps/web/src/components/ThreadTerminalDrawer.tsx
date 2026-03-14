@@ -16,6 +16,7 @@ import {
   useState,
 } from "react";
 import { Popover, PopoverPopup, PopoverTrigger } from "~/components/ui/popover";
+import { toastManager } from "./ui/toast";
 import { openInPreferredEditor } from "../editorPreferences";
 import {
   extractTerminalLinks,
@@ -47,6 +48,30 @@ function clampDrawerHeight(height: number): number {
 
 function writeSystemMessage(terminal: Terminal, message: string): void {
   terminal.write(`\r\n[terminal] ${message}\r\n`);
+}
+
+function reportTerminalOpenFailure(input: {
+  readonly error: unknown;
+  readonly threadId: ThreadId;
+  readonly targetId: ExecutionTargetId;
+  readonly terminalId: string;
+  readonly cwd: string;
+}): string {
+  const description =
+    input.error instanceof Error ? input.error.message : "Failed to open terminal";
+  console.error("Failed to open terminal", {
+    threadId: input.threadId,
+    targetId: input.targetId,
+    terminalId: input.terminalId,
+    cwd: input.cwd,
+    error: description,
+  });
+  toastManager.add({
+    type: "error",
+    title: "Unable to open terminal",
+    description,
+  });
+  return description;
 }
 
 function terminalThemeFromApp(): ITheme {
@@ -141,6 +166,7 @@ function TerminalViewport({
   const fitAddonRef = useRef<FitAddon | null>(null);
   const onSessionExitedRef = useRef(onSessionExited);
   const hasHandledExitRef = useRef(false);
+  const sessionReadyRef = useRef(false);
 
   useEffect(() => {
     onSessionExitedRef.current = onSessionExited;
@@ -151,6 +177,7 @@ function TerminalViewport({
     if (!mount) return;
 
     let disposed = false;
+    sessionReadyRef.current = false;
 
     const fitAddon = new FitAddon();
     const terminal = new Terminal({
@@ -296,6 +323,7 @@ function TerminalViewport({
         if (snapshot.history.length > 0) {
           activeTerminal.write(snapshot.history);
         }
+        sessionReadyRef.current = true;
         if (autoFocus) {
           window.requestAnimationFrame(() => {
             activeTerminal.focus();
@@ -303,10 +331,14 @@ function TerminalViewport({
         }
       } catch (err) {
         if (disposed) return;
-        writeSystemMessage(
-          terminal,
-          err instanceof Error ? err.message : "Failed to open terminal",
-        );
+        const message = reportTerminalOpenFailure({
+          error: err,
+          threadId,
+          targetId,
+          terminalId,
+          cwd,
+        });
+        writeSystemMessage(terminal, message);
       }
     };
 
@@ -322,6 +354,7 @@ function TerminalViewport({
 
       if (event.type === "started" || event.type === "restarted") {
         hasHandledExitRef.current = false;
+        sessionReadyRef.current = true;
         activeTerminal.write("\u001bc");
         if (event.snapshot.history.length > 0) {
           activeTerminal.write(event.snapshot.history);
@@ -336,11 +369,13 @@ function TerminalViewport({
       }
 
       if (event.type === "error") {
+        sessionReadyRef.current = false;
         writeSystemMessage(activeTerminal, event.message);
         return;
       }
 
       if (event.type === "exited") {
+        sessionReadyRef.current = false;
         const details = [
           typeof event.exitCode === "number" ? `code ${event.exitCode}` : null,
           typeof event.exitSignal === "number" ? `signal ${event.exitSignal}` : null,
@@ -374,6 +409,9 @@ function TerminalViewport({
       if (wasAtBottom) {
         activeTerminal.scrollToBottom();
       }
+      if (!sessionReadyRef.current) {
+        return;
+      }
       void api.terminal
         .resize({
           threadId,
@@ -388,6 +426,7 @@ function TerminalViewport({
 
     return () => {
       disposed = true;
+      sessionReadyRef.current = false;
       window.clearTimeout(fitTimer);
       unsubscribe();
       inputDisposable.dispose();
@@ -424,6 +463,9 @@ function TerminalViewport({
       fitAddon.fit();
       if (wasAtBottom) {
         terminal.scrollToBottom();
+      }
+      if (!sessionReadyRef.current) {
+        return;
       }
       void api.terminal
         .resize({

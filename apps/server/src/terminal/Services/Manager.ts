@@ -43,6 +43,7 @@ export interface TerminalSessionState {
   unsubscribeData: (() => void) | null;
   unsubscribeExit: (() => void) | null;
   hasRunningSubprocess: boolean;
+  supportsSubprocessPolling: boolean;
   runtimeEnv: Record<string, string> | null;
 }
 

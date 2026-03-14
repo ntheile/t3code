@@ -15,6 +15,7 @@ import Mime from "@effect/platform-node/Mime";
 import {
   ProjectListDirectoryResult,
   CommandId,
+  DEFAULT_TERMINAL_ID,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   LOCAL_EXECUTION_TARGET_ID,
   type ClientOrchestrationCommand,
@@ -238,6 +239,28 @@ function stripRequestTag<T extends { _tag: string }>(body: T) {
 
 const encodeWsResponse = Schema.encodeEffect(Schema.fromJsonString(WsResponse));
 const decodeWebSocketRequest = decodeJsonResult(WebSocketRequest);
+const TERMINAL_REQUEST_TAGS = new Set<string>([
+  WS_METHODS.terminalOpen,
+  WS_METHODS.terminalWrite,
+  WS_METHODS.terminalResize,
+  WS_METHODS.terminalClear,
+  WS_METHODS.terminalRestart,
+  WS_METHODS.terminalClose,
+]);
+
+function terminalRequestLogContext(body: { _tag: string; [key: string]: unknown }) {
+  if (!TERMINAL_REQUEST_TAGS.has(body._tag)) {
+    return null;
+  }
+
+  return {
+    method: body._tag,
+    threadId: typeof body.threadId === "string" ? body.threadId : undefined,
+    targetId: typeof body.targetId === "string" ? body.targetId : LOCAL_EXECUTION_TARGET_ID,
+    terminalId: typeof body.terminalId === "string" ? body.terminalId : DEFAULT_TERMINAL_ID,
+    cwd: typeof body.cwd === "string" ? body.cwd : undefined,
+  };
+}
 
 export type ServerCoreRuntimeServices =
   | OrchestrationEngineService
@@ -1282,7 +1305,28 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
       case WS_METHODS.terminalOpen: {
         const body = stripRequestTag(request.body);
-        return yield* terminalManager.open(body);
+        logger.info("terminal open requested", {
+          threadId: body.threadId,
+          targetId: body.targetId ?? LOCAL_EXECUTION_TARGET_ID,
+          terminalId: body.terminalId,
+          cwd: body.cwd,
+          cols: body.cols,
+          rows: body.rows,
+        });
+        return yield* terminalManager.open(body).pipe(
+          Effect.tap((snapshot) =>
+            Effect.sync(() =>
+              logger.info("terminal open resolved", {
+                threadId: snapshot.threadId,
+                targetId: snapshot.targetId ?? LOCAL_EXECUTION_TARGET_ID,
+                terminalId: snapshot.terminalId,
+                cwd: snapshot.cwd,
+                status: snapshot.status,
+                pid: snapshot.pid,
+              }),
+            ),
+          ),
+        );
       }
 
       case WS_METHODS.terminalWrite: {
@@ -1394,6 +1438,13 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
     const result = yield* Effect.exit(routeRequest(request.success));
     if (Exit.isFailure(result)) {
+      const terminalContext = terminalRequestLogContext(request.success.body);
+      if (terminalContext) {
+        logger.error("terminal request failed", {
+          ...terminalContext,
+          cause: Cause.pretty(result.cause),
+        });
+      }
       return yield* sendWsResponse({
         id: request.success.id,
         error: { message: Cause.pretty(result.cause) },

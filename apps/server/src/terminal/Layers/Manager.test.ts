@@ -20,6 +20,7 @@ import {
 import { TerminalManagerRuntime } from "./Manager";
 import { Effect, Encoding } from "effect";
 import type { TerminalLaunchSpec } from "../Services/Manager";
+import type { SshTerminalProcessInput } from "../sshTerminalProcess";
 
 class FakePtyProcess implements PtyProcess {
   readonly writes: string[] = [];
@@ -108,6 +109,19 @@ class FakePtyAdapter implements PtyAdapterShape {
   }
 }
 
+class FakeRemoteTerminalFactory {
+  readonly inputs: SshTerminalProcessInput[] = [];
+  readonly processes: FakePtyProcess[] = [];
+  private nextPid = 19_000;
+
+  async create(input: SshTerminalProcessInput): Promise<PtyProcess> {
+    this.inputs.push(input);
+    const process = new FakePtyProcess(this.nextPid++);
+    this.processes.push(process);
+    return process;
+  }
+}
+
 function waitFor(predicate: () => boolean, timeoutMs = 800): Promise<void> {
   const started = Date.now();
   return new Promise((resolve, reject) => {
@@ -189,6 +203,7 @@ describe("TerminalManager", () => {
       processKillGraceMs?: number;
       maxRetainedInactiveSessions?: number;
       ptyAdapter?: FakePtyAdapter;
+      remoteTerminalFactory?: FakeRemoteTerminalFactory;
     } = {},
   ) {
     const logsDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3code-terminal-"));
@@ -200,6 +215,12 @@ describe("TerminalManager", () => {
       historyLineLimit,
       shellResolver: options.shellResolver ?? (() => "/bin/bash"),
       ...(options.resolveLaunchSpec ? { resolveLaunchSpec: options.resolveLaunchSpec } : {}),
+      ...(options.remoteTerminalFactory
+        ? {
+            createSshProcess: (input: SshTerminalProcessInput) =>
+              options.remoteTerminalFactory!.create(input),
+          }
+        : {}),
       ...(options.subprocessChecker ? { subprocessChecker: options.subprocessChecker } : {}),
       ...(options.subprocessPollIntervalMs
         ? { subprocessPollIntervalMs: options.subprocessPollIntervalMs }
@@ -338,7 +359,9 @@ describe("TerminalManager", () => {
   });
 
   it("spawns remote terminals through ssh without validating cwd on the host machine", async () => {
+    const remoteTerminalFactory = new FakeRemoteTerminalFactory();
     const { manager, ptyAdapter } = makeManager(5, {
+      remoteTerminalFactory,
       resolveLaunchSpec: async () =>
         ({
           kind: "ssh",
@@ -354,11 +377,47 @@ describe("TerminalManager", () => {
       cwd: "/remote/project",
     });
 
-    expect(ptyAdapter.spawnInputs).toHaveLength(1);
-    expect(ptyAdapter.spawnInputs[0]?.shell).toBe("ssh");
-    expect(ptyAdapter.spawnInputs[0]?.args).toContain("-tt");
-    expect(ptyAdapter.spawnInputs[0]?.args).toContain("dev@example.com");
-    expect(ptyAdapter.spawnInputs[0]?.args).toContain("sh");
+    expect(ptyAdapter.spawnInputs).toHaveLength(0);
+    expect(remoteTerminalFactory.inputs).toHaveLength(1);
+    expect(remoteTerminalFactory.inputs[0]).toMatchObject({
+      connection: {
+        host: "example.com",
+        user: "dev",
+        port: 2222,
+      },
+      cwd: "/remote/project",
+      cols: 120,
+      rows: 30,
+    });
+
+    manager.dispose();
+  });
+
+  it("does not poll local subprocess activity for ssh-backed terminals", async () => {
+    const remoteTerminalFactory = new FakeRemoteTerminalFactory();
+    let subprocessChecks = 0;
+    const { manager } = makeManager(5, {
+      remoteTerminalFactory,
+      subprocessChecker: async () => {
+        subprocessChecks += 1;
+        return false;
+      },
+      subprocessPollIntervalMs: 20,
+      resolveLaunchSpec: async () =>
+        ({
+          kind: "ssh",
+          host: "example.com",
+        }) satisfies TerminalLaunchSpec,
+    });
+
+    await manager.open({
+      threadId: "thread-1",
+      targetId: "remote-dev",
+      cwd: "/remote/project",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+
+    expect(subprocessChecks).toBe(0);
 
     manager.dispose();
   });

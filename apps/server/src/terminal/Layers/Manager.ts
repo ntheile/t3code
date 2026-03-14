@@ -21,11 +21,7 @@ import { PtyAdapter, PtyAdapterShape, type PtyExitEvent, type PtyProcess } from 
 import { runProcess } from "../../processRunner";
 import { ServerConfig } from "../../config";
 import { ExecutionTargetService } from "../../executionTarget/Services/ExecutionTargetService";
-import {
-  buildRemoteShellScript,
-  buildSshCommand,
-  type SshConnectionSpec,
-} from "../../executionTarget/ssh";
+import { type SshConnectionSpec } from "../../executionTarget/ssh";
 import {
   ShellCandidate,
   TerminalError,
@@ -35,6 +31,7 @@ import {
   TerminalSessionState,
   TerminalStartInput,
 } from "../Services/Manager";
+import { createSshTerminalProcess, type SshTerminalProcessInput } from "../sshTerminalProcess";
 
 const DEFAULT_HISTORY_LINE_LIMIT = 5_000;
 const DEFAULT_PERSIST_DEBOUNCE_MS = 40;
@@ -329,6 +326,7 @@ interface TerminalManagerOptions {
   historyLineLimit?: number;
   ptyAdapter: PtyAdapterShape;
   resolveLaunchSpec?: (targetId: string) => Promise<TerminalLaunchSpec>;
+  createSshProcess?: (input: SshTerminalProcessInput) => Promise<PtyProcess>;
   shellResolver?: () => string;
   subprocessChecker?: TerminalSubprocessChecker;
   subprocessPollIntervalMs?: number;
@@ -342,6 +340,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
   private readonly historyLineLimit: number;
   private readonly ptyAdapter: PtyAdapterShape;
   private readonly resolveLaunchSpec: (targetId: string) => Promise<TerminalLaunchSpec>;
+  private readonly createSshProcess: (input: SshTerminalProcessInput) => Promise<PtyProcess>;
   private readonly shellResolver: () => string;
   private readonly persistQueues = new Map<string, Promise<void>>();
   private readonly persistTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -364,6 +363,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
     this.ptyAdapter = options.ptyAdapter;
     this.resolveLaunchSpec =
       options.resolveLaunchSpec ?? (async () => ({ kind: "local" }) satisfies TerminalLaunchSpec);
+    this.createSshProcess = options.createSshProcess ?? createSshTerminalProcess;
     this.shellResolver = options.shellResolver ?? defaultShellResolver;
     this.persistDebounceMs = DEFAULT_PERSIST_DEBOUNCE_MS;
     this.subprocessChecker = options.subprocessChecker ?? defaultSubprocessChecker;
@@ -406,6 +406,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
           unsubscribeData: null,
           unsubscribeExit: null,
           hasRunningSubprocess: false,
+          supportsSubprocessPolling: false,
           runtimeEnv: normalizedRuntimeEnv(input.env),
         };
         this.sessions.set(sessionKey, session);
@@ -482,16 +483,20 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
 
   async resize(raw: TerminalResizeInput): Promise<void> {
     const input = decodeTerminalResizeInput(raw);
-    const session = this.requireSession(input.targetId, input.threadId, input.terminalId);
-    if (!session.process || session.status !== "running") {
-      throw new Error(
-        `Terminal is not running for thread: ${input.threadId}, terminal: ${input.terminalId}`,
-      );
-    }
-    session.cols = input.cols;
-    session.rows = input.rows;
-    session.updatedAt = new Date().toISOString();
-    session.process.resize(input.cols, input.rows);
+    const targetId = input.targetId ?? LOCAL_EXECUTION_TARGET_ID;
+    await this.runWithThreadLock(input.threadId, async () => {
+      const session = this.sessions.get(toSessionKey(targetId, input.threadId, input.terminalId));
+      if (!session) {
+        return;
+      }
+      session.cols = input.cols;
+      session.rows = input.rows;
+      session.updatedAt = new Date().toISOString();
+      if (!session.process || session.status !== "running") {
+        return;
+      }
+      session.process.resize(input.cols, input.rows);
+    });
   }
 
   async clear(raw: TerminalClearInput): Promise<void> {
@@ -545,6 +550,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
           unsubscribeData: null,
           unsubscribeExit: null,
           hasRunningSubprocess: false,
+          supportsSubprocessPolling: false,
           runtimeEnv: normalizedRuntimeEnv(input.env),
         };
         this.sessions.set(sessionKey, session);
@@ -631,6 +637,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
     session.exitCode = null;
     session.exitSignal = null;
     session.hasRunningSubprocess = false;
+    session.supportsSubprocessPolling = launchSpec.kind === "local";
     session.updatedAt = new Date().toISOString();
 
     let ptyProcess: PtyProcess | null = null;
@@ -693,33 +700,14 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
           throw new Error(`${detail}.${tried}`.trim());
         }
       } else {
-        const remoteScript = buildRemoteShellScript({
+        ptyProcess = await this.createSshProcess({
+          connection: launchSpec satisfies SshConnectionSpec,
           cwd: session.cwd,
           ...(session.runtimeEnv ? { env: session.runtimeEnv } : {}),
-          command: [
-            'if [ -n "${SHELL:-}" ]; then exec "$SHELL" -l;',
-            "elif command -v bash >/dev/null 2>&1; then exec bash -l;",
-            "else exec sh -l;",
-            "fi",
-          ].join(" "),
+          cols: session.cols,
+          rows: session.rows,
         });
-        const sshCommand = buildSshCommand({
-          connection: launchSpec satisfies SshConnectionSpec,
-          remoteScript,
-          allocateTty: true,
-          env: process.env,
-        });
-        ptyProcess = await Effect.runPromise(
-          this.ptyAdapter.spawn({
-            shell: sshCommand.command,
-            args: sshCommand.args,
-            cwd: process.cwd(),
-            cols: session.cols,
-            rows: session.rows,
-            env: createTerminalSpawnEnv(sshCommand.env),
-          }),
-        );
-        startedShell = `${sshCommand.command} ${sshCommand.args.join(" ")}`;
+        startedShell = `ssh://${launchSpec.user ? `${launchSpec.user}@` : ""}${launchSpec.host}`;
       }
 
       session.process = ptyProcess;
@@ -749,6 +737,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
       session.pid = null;
       session.process = null;
       session.hasRunningSubprocess = false;
+      session.supportsSubprocessPolling = false;
       session.updatedAt = new Date().toISOString();
       this.evictInactiveSessionsIfNeeded();
       this.updateSubprocessPollingState();
@@ -1078,7 +1067,8 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
 
   private updateSubprocessPollingState(): void {
     const hasRunningSessions = [...this.sessions.values()].some(
-      (session) => session.status === "running" && session.pid !== null,
+      (session) =>
+        session.status === "running" && session.pid !== null && session.supportsSubprocessPolling,
     );
     if (hasRunningSessions) {
       this.ensureSubprocessPolling();
@@ -1107,7 +1097,9 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
 
     const runningSessions = [...this.sessions.values()].filter(
       (session): session is TerminalSessionState & { pid: number } =>
-        session.status === "running" && Number.isInteger(session.pid),
+        session.status === "running" &&
+        session.supportsSubprocessPolling &&
+        Number.isInteger(session.pid),
     );
     if (runningSessions.length === 0) {
       this.stopSubprocessPolling();
