@@ -39,12 +39,16 @@ import {
   type ThreadTerminalGroup,
 } from "../types";
 import { readNativeApi } from "~/nativeApi";
+import { readUiScaleFromDocument, terminalFontSizePxForUiScale } from "../lib/uiScale";
 import { readViewportHeight, subscribeToViewportChanges } from "../lib/viewport";
 
 const MIN_DRAWER_HEIGHT = 180;
 const MAX_DRAWER_HEIGHT_RATIO = 0.75;
-const TERMINAL_FONT_SIZE_PX = 12;
 const TERMINAL_LINE_HEIGHT = 1.2;
+
+function currentTerminalFontSizePx(): number {
+  return terminalFontSizePxForUiScale(readUiScaleFromDocument());
+}
 
 function maxDrawerHeight(): number {
   const viewportHeight = readViewportHeight();
@@ -195,10 +199,11 @@ function TerminalViewport({
     sessionReadyRef.current = false;
 
     const fitAddon = new FitAddon();
+    const initialTerminalFontSizePx = currentTerminalFontSizePx();
     const terminal = new Terminal({
       cursorBlink: true,
       lineHeight: TERMINAL_LINE_HEIGHT,
-      fontSize: TERMINAL_FONT_SIZE_PX,
+      fontSize: initialTerminalFontSizePx,
       scrollback: 5_000,
       fontFamily: '"SF Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace',
       theme: terminalThemeFromApp(),
@@ -222,6 +227,10 @@ function TerminalViewport({
         writeSystemMessage(activeTerminal, error instanceof Error ? error.message : fallbackError);
       }
     };
+    const triggerAutocomplete = () => {
+      void sendTerminalInput("\u001b[C", "Failed to move cursor right");
+      terminal.focus();
+    };
 
     terminal.attachCustomKeyEventHandler((event) => {
       const navigationData = terminalNavigationShortcutData(event);
@@ -239,16 +248,28 @@ function TerminalViewport({
       return false;
     });
 
-    const fallbackLineHeightPx = TERMINAL_FONT_SIZE_PX * TERMINAL_LINE_HEIGHT;
+    const fallbackLineHeightPx = () =>
+      Number(terminalRef.current?.options.fontSize ?? initialTerminalFontSizePx) *
+      TERMINAL_LINE_HEIGHT;
     const touchState = {
       active: false,
       lastClientY: 0,
+      startClientX: 0,
+      startClientY: 0,
+      moved: false,
       pixelRemainder: 0,
     };
     const touchTarget =
       mount.querySelector<HTMLElement>(".xterm-screen") ??
       mount.querySelector<HTMLElement>(".xterm-viewport") ??
       mount;
+    const pointerTapState = {
+      pointerId: -1,
+      moved: false,
+      startClientX: 0,
+      startClientY: 0,
+      lastTouchUpAt: 0,
+    };
     const onTouchStart = (event: TouchEvent) => {
       if (event.touches.length !== 1) {
         touchState.active = false;
@@ -256,7 +277,10 @@ function TerminalViewport({
         return;
       }
       touchState.active = true;
+      touchState.startClientX = event.touches[0]!.clientX;
+      touchState.startClientY = event.touches[0]!.clientY;
       touchState.lastClientY = event.touches[0]!.clientY;
+      touchState.moved = false;
       touchState.pixelRemainder = 0;
     };
     const onTouchMove = (event: TouchEvent) => {
@@ -265,31 +289,102 @@ function TerminalViewport({
       }
 
       const nextClientY = event.touches[0]!.clientY;
+      const nextClientX = event.touches[0]!.clientX;
       const pixelDelta = touchState.lastClientY - nextClientY;
       touchState.lastClientY = nextClientY;
+      if (
+        Math.abs(nextClientX - touchState.startClientX) > 10 ||
+        Math.abs(nextClientY - touchState.startClientY) > 10
+      ) {
+        touchState.moved = true;
+      }
 
       if (Math.abs(pixelDelta) < 0.5) {
         return;
       }
 
       touchState.pixelRemainder += pixelDelta;
-      const lineDelta = Math.trunc(touchState.pixelRemainder / fallbackLineHeightPx);
+      const lineDelta = Math.trunc(touchState.pixelRemainder / fallbackLineHeightPx());
       if (lineDelta === 0) {
         return;
       }
 
-      touchState.pixelRemainder -= lineDelta * fallbackLineHeightPx;
+      touchState.pixelRemainder -= lineDelta * fallbackLineHeightPx();
       event.preventDefault();
       terminal.scrollLines(lineDelta);
     };
+    const onTouchEnd = () => {
+      resetTouchState();
+    };
     const resetTouchState = () => {
       touchState.active = false;
+      touchState.moved = false;
       touchState.pixelRemainder = 0;
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.pointerType !== "touch" || !event.isPrimary) {
+        return;
+      }
+      pointerTapState.pointerId = event.pointerId;
+      pointerTapState.moved = false;
+      pointerTapState.startClientX = event.clientX;
+      pointerTapState.startClientY = event.clientY;
+    };
+    const onPointerMove = (event: PointerEvent) => {
+      if (event.pointerType !== "touch" || event.pointerId !== pointerTapState.pointerId) {
+        return;
+      }
+      if (
+        Math.abs(event.clientX - pointerTapState.startClientX) > 10 ||
+        Math.abs(event.clientY - pointerTapState.startClientY) > 10
+      ) {
+        pointerTapState.moved = true;
+      }
+    };
+    const onPointerUp = (event: PointerEvent) => {
+      if (event.pointerType !== "touch" || event.pointerId !== pointerTapState.pointerId) {
+        return;
+      }
+
+      const completedTap = !pointerTapState.moved;
+      pointerTapState.pointerId = -1;
+      pointerTapState.moved = false;
+      if (!completedTap) {
+        return;
+      }
+
+      const now = Date.now();
+      if (now - pointerTapState.lastTouchUpAt <= 320) {
+        pointerTapState.lastTouchUpAt = 0;
+        triggerAutocomplete();
+        return;
+      }
+
+      pointerTapState.lastTouchUpAt = now;
+    };
+    const onPointerCancel = (event: PointerEvent) => {
+      if (event.pointerType !== "touch" || event.pointerId !== pointerTapState.pointerId) {
+        return;
+      }
+      pointerTapState.pointerId = -1;
+      pointerTapState.moved = false;
+    };
+    const onDoubleClick = (event: MouseEvent) => {
+      if (event.button !== 0) {
+        return;
+      }
+      event.preventDefault();
+      triggerAutocomplete();
     };
     touchTarget.addEventListener("touchstart", onTouchStart, { passive: true });
     touchTarget.addEventListener("touchmove", onTouchMove, { passive: false });
-    touchTarget.addEventListener("touchend", resetTouchState, { passive: true });
+    touchTarget.addEventListener("touchend", onTouchEnd, { passive: true });
     touchTarget.addEventListener("touchcancel", resetTouchState, { passive: true });
+    mount.addEventListener("pointerdown", onPointerDown, { passive: true });
+    mount.addEventListener("pointermove", onPointerMove, { passive: true });
+    mount.addEventListener("pointerup", onPointerUp, { passive: true });
+    mount.addEventListener("pointercancel", onPointerCancel, { passive: true });
+    mount.addEventListener("dblclick", onDoubleClick);
 
     const terminalLinksDisposable = terminal.registerLinkProvider({
       provideLinks: (bufferLineNumber, callback) => {
@@ -359,15 +454,33 @@ function TerminalViewport({
         );
     });
 
-    const themeObserver = new MutationObserver(() => {
+    const appearanceObserver = new MutationObserver(() => {
       const activeTerminal = terminalRef.current;
-      if (!activeTerminal) return;
+      const activeFitAddon = fitAddonRef.current;
+      const api = readNativeApi();
+      if (!activeTerminal || !activeFitAddon) return;
       activeTerminal.options.theme = terminalThemeFromApp();
+      const nextFontSize = currentTerminalFontSizePx();
+      if (activeTerminal.options.fontSize !== nextFontSize) {
+        activeTerminal.options.fontSize = nextFontSize;
+        activeFitAddon.fit();
+        if (sessionReadyRef.current && api) {
+          void api.terminal
+            .resize({
+              threadId,
+              targetId,
+              terminalId,
+              cols: activeTerminal.cols,
+              rows: activeTerminal.rows,
+            })
+            .catch(() => undefined);
+        }
+      }
       activeTerminal.refresh(0, activeTerminal.rows - 1);
     });
-    themeObserver.observe(document.documentElement, {
+    appearanceObserver.observe(document.documentElement, {
       attributes: true,
-      attributeFilter: ["class", "style"],
+      attributeFilter: ["class", "data-ui-scale", "style"],
     });
 
     const openTerminal = async () => {
@@ -498,11 +611,16 @@ function TerminalViewport({
       unsubscribe();
       inputDisposable.dispose();
       terminalLinksDisposable.dispose();
-      themeObserver.disconnect();
+      appearanceObserver.disconnect();
       touchTarget.removeEventListener("touchstart", onTouchStart);
       touchTarget.removeEventListener("touchmove", onTouchMove);
-      touchTarget.removeEventListener("touchend", resetTouchState);
+      touchTarget.removeEventListener("touchend", onTouchEnd);
       touchTarget.removeEventListener("touchcancel", resetTouchState);
+      mount.removeEventListener("pointerdown", onPointerDown);
+      mount.removeEventListener("pointermove", onPointerMove);
+      mount.removeEventListener("pointerup", onPointerUp);
+      mount.removeEventListener("pointercancel", onPointerCancel);
+      mount.removeEventListener("dblclick", onDoubleClick);
       terminalRef.current = null;
       fitAddonRef.current = null;
       terminal.dispose();

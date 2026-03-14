@@ -64,6 +64,7 @@
 :root {
   color-scheme: light;
   --app-viewport-height: 100dvh;
+  --app-root-font-size: 16px;
   --radius: 0.625rem;
   --background: var(--color-white);
   --foreground: var(--color-neutral-800);
@@ -121,6 +122,30 @@
   }
 }
 
+html {
+  font-size: var(--app-root-font-size);
+}
+
+html[data-ui-scale="small"] {
+  --app-root-font-size: 14px;
+}
+
+html[data-ui-scale="medium"] {
+  --app-root-font-size: 16px;
+}
+
+html[data-ui-scale="large"] {
+  --app-root-font-size: 18px;
+}
+
+html[data-ui-scale="xl"] {
+  --app-root-font-size: 20px;
+}
+
+html[data-ui-scale="xxl"] {
+  --app-root-font-size: 22px;
+}
+
 body {
   font-family:
     "DM Sans",
@@ -144,16 +169,6 @@ body,
   overflow-x: hidden;
   overflow-x: clip;
   overscroll-behavior-y: none;
-}
-
-html {
-  font-size: 16px;
-}
-
-@media (max-width: 640px) {
-  html {
-    font-size: 17px;
-  }
 }
 
 body::after {

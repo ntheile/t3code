@@ -13,6 +13,7 @@ import { resolveAndPersistPreferredEditor } from "../editorPreferences";
 import { isElectron } from "../env";
 import { useTheme } from "../hooks/useTheme";
 import { serverConfigQueryOptions } from "../lib/serverReactQuery";
+import { UI_SCALE_OPTIONS, type UiScale } from "../lib/uiScale";
 import {
   executionTargetListQueryOptions,
   executionTargetQueryKeys,
@@ -31,7 +32,7 @@ import {
 } from "../components/ui/select";
 import { Switch } from "../components/ui/switch";
 import { APP_VERSION } from "../branding";
-import { SidebarInset } from "~/components/ui/sidebar";
+import { SidebarInset, SidebarTrigger } from "~/components/ui/sidebar";
 
 const THEME_OPTIONS = [
   {
@@ -81,6 +82,13 @@ const TIMESTAMP_FORMAT_LABELS = {
   locale: "System default",
   "12-hour": "12-hour",
   "24-hour": "24-hour",
+} as const;
+const UI_SCALE_LABELS = {
+  small: "Small",
+  medium: "Medium",
+  large: "Large",
+  xl: "XL",
+  xxl: "XXL",
 } as const;
 
 function getCustomModelsForProvider(
@@ -402,11 +410,14 @@ function SettingsRouteView() {
 
         <div className="flex-1 overflow-y-auto p-6">
           <div className="mx-auto flex w-full max-w-3xl flex-col gap-6">
-            <header className="space-y-1">
-              <h1 className="text-2xl font-semibold tracking-tight text-foreground">Settings</h1>
-              <p className="text-sm text-muted-foreground">
-                Configure app-level preferences for this device.
-              </p>
+            <header className="flex items-start gap-3">
+              <SidebarTrigger className="size-7 shrink-0" />
+              <div className="space-y-1">
+                <h1 className="text-2xl font-semibold tracking-tight text-foreground">Settings</h1>
+                <p className="text-sm text-muted-foreground">
+                  Configure app-level preferences for this device.
+                </p>
+              </div>
             </header>
 
             <section className="rounded-2xl border border-border bg-card p-5">
@@ -480,7 +491,39 @@ function SettingsRouteView() {
                   </Select>
                 </div>
 
-                {settings.timestampFormat !== defaults.timestampFormat ? (
+                <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
+                  <div>
+                    <p className="text-sm font-medium text-foreground">Font and button size</p>
+                    <p className="text-xs text-muted-foreground">
+                      Increases app font sizes and button sizes across the interface.
+                    </p>
+                  </div>
+                  <Select
+                    value={settings.uiScale}
+                    onValueChange={(value) => {
+                      if (!UI_SCALE_OPTIONS.includes(value as UiScale)) {
+                        return;
+                      }
+                      updateSettings({
+                        uiScale: value as UiScale,
+                      });
+                    }}
+                  >
+                    <SelectTrigger className="w-40" aria-label="UI size">
+                      <SelectValue>{UI_SCALE_LABELS[settings.uiScale]}</SelectValue>
+                    </SelectTrigger>
+                    <SelectPopup align="end">
+                      <SelectItem value="small">{UI_SCALE_LABELS.small}</SelectItem>
+                      <SelectItem value="medium">{UI_SCALE_LABELS.medium}</SelectItem>
+                      <SelectItem value="large">{UI_SCALE_LABELS.large}</SelectItem>
+                      <SelectItem value="xl">{UI_SCALE_LABELS.xl}</SelectItem>
+                      <SelectItem value="xxl">{UI_SCALE_LABELS.xxl}</SelectItem>
+                    </SelectPopup>
+                  </Select>
+                </div>
+
+                {settings.timestampFormat !== defaults.timestampFormat ||
+                settings.uiScale !== defaults.uiScale ? (
                   <div className="flex justify-end">
                     <Button
                       size="xs"
@@ -488,6 +531,7 @@ function SettingsRouteView() {
                       onClick={() =>
                         updateSettings({
                           timestampFormat: defaults.timestampFormat,
+                          uiScale: defaults.uiScale,
                         })
                       }
                     >

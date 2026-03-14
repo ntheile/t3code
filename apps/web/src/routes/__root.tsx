@@ -25,6 +25,7 @@ import { providerQueryKeys } from "../lib/providerReactQuery";
 import { projectQueryKeys } from "../lib/projectReactQuery";
 import { collectActiveTerminalThreadIds } from "../lib/terminalStateCleanup";
 import { subscribeToViewportChanges, syncViewportHeightCssVar } from "../lib/viewport";
+import { useAppSettings } from "../appSettings";
 
 export const Route = createRootRouteWithContext<{
   queryClient: QueryClient;
@@ -53,6 +54,7 @@ function RootRouteView() {
     <ToastProvider>
       <AnchoredToastProvider>
         <ViewportMetricsSync />
+        <UiScaleSync />
         <EventRouter />
         <DesktopProjectBootstrap />
         <Outlet />
@@ -68,6 +70,19 @@ function ViewportMetricsSync() {
       syncViewportHeightCssVar();
     });
   }, []);
+
+  return null;
+}
+
+function UiScaleSync() {
+  const { settings } = useAppSettings();
+
+  useEffect(() => {
+    document.documentElement.dataset.uiScale = settings.uiScale;
+    return () => {
+      delete document.documentElement.dataset.uiScale;
+    };
+  }, [settings.uiScale]);
 
   return null;
 }
