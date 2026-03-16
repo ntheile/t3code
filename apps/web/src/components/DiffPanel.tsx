@@ -502,6 +502,7 @@ export default function DiffPanel({
               onSelectFile={selectFile}
               onToggleDirectory={toggleDirectory}
               scrollViewportRef={fileTreeViewportRef}
+              theme={resolvedTheme === "light" ? "light" : "dark"}
               {...(shouldCollapseFileTreeOnMobile
                 ? {
                     onToggleVisibility: () => setIsMobileFileTreeOpen(false),

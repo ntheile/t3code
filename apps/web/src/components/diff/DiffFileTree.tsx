@@ -5,6 +5,7 @@ import type { RefObject } from "react";
 import { cn } from "~/lib/utils";
 
 import { resolveFileDiffPath } from "./diffRendering";
+import { VscodeEntryIcon } from "../chat/VscodeEntryIcon";
 import { Button } from "../ui/button";
 
 export type DiffFileTreeNode =
@@ -142,6 +143,7 @@ export function DiffFileTree(props: {
   onToggleVisibility?: () => void;
   scrollViewportRef?: RefObject<HTMLDivElement | null>;
   showVisibilityToggle?: boolean;
+  theme: "light" | "dark";
 }) {
   return (
     <div className="diff-file-tree-scroll flex min-h-0 flex-col border-b border-border/70 bg-card/35 md:w-64 md:shrink-0 md:border-b-0 md:border-r">
@@ -179,6 +181,7 @@ export function DiffFileTree(props: {
               node={node}
               onOpenInEditor={props.onOpenInEditor}
               onSelectFile={props.onSelectFile}
+              theme={props.theme}
               onToggleDirectory={props.onToggleDirectory}
             />
           ))}
@@ -195,6 +198,7 @@ function DiffFileTreeNodeRow(props: {
   node: DiffFileTreeNode;
   onOpenInEditor: (filePath: string) => void;
   onSelectFile: (filePath: string) => void;
+  theme: "light" | "dark";
   onToggleDirectory: (directoryPath: string) => void;
 }) {
   const {
@@ -204,6 +208,7 @@ function DiffFileTreeNodeRow(props: {
     node,
     onOpenInEditor,
     onSelectFile,
+    theme,
     onToggleDirectory,
   } = props;
 
@@ -238,6 +243,7 @@ function DiffFileTreeNodeRow(props: {
                 node={child}
                 onOpenInEditor={onOpenInEditor}
                 onSelectFile={onSelectFile}
+                theme={theme}
                 onToggleDirectory={onToggleDirectory}
               />
             ))}
@@ -262,6 +268,7 @@ function DiffFileTreeNodeRow(props: {
       onDoubleClick={() => onOpenInEditor(node.path)}
       style={{ paddingLeft: `${depth * 0.75 + 1.75}rem` }}
     >
+      <VscodeEntryIcon pathValue={node.path} kind="file" theme={theme} />
       <span className="truncate">{node.name}</span>
     </button>
   );
