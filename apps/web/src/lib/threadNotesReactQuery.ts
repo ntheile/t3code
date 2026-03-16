@@ -67,6 +67,7 @@ export function useThreadNotesDocument(threadId: ThreadId): UseThreadNotesDocume
   const saveInFlightRef = useRef(false);
   const queuedImmediateSaveRef = useRef(false);
   const hydratedThreadIdRef = useRef<ThreadId | null>(null);
+  const documentVersionRef = useRef(0);
 
   const flushSave = useCallback(async () => {
     if (saveInFlightRef.current) {
@@ -74,40 +75,60 @@ export function useThreadNotesDocument(threadId: ThreadId): UseThreadNotesDocume
       return;
     }
 
+    const saveDocumentVersion = documentVersionRef.current;
+    const saveThreadId = threadId;
     const nextNotes = latestNotesRef.current;
+    const shouldClearLegacyNotes = legacyNotesRef.current.length > 0;
+    const isCurrentDocument = () => documentVersionRef.current === saveDocumentVersion;
+
     if (nextNotes === lastSavedNotesRef.current) {
-      setIsSaving(false);
+      if (isCurrentDocument()) {
+        setIsSaving(false);
+      }
       return;
     }
 
     saveInFlightRef.current = true;
-    setIsSaving(true);
-    setErrorMessage(null);
+    if (isCurrentDocument()) {
+      setIsSaving(true);
+      setErrorMessage(null);
+    }
 
     try {
       const saved = await ensureNativeApi().threads.upsertNotes({
-        threadId,
+        threadId: saveThreadId,
         notes: nextNotes,
       });
-      lastSavedNotesRef.current = saved.notes;
-      queryClient.setQueryData(threadNotesQueryKeys.byThread(threadId), saved);
-      clearThreadNotesBackup(threadId);
-      backupNotesRef.current = null;
+      queryClient.setQueryData(threadNotesQueryKeys.byThread(saveThreadId), saved);
+      clearThreadNotesBackup(saveThreadId);
+      if (isCurrentDocument()) {
+        lastSavedNotesRef.current = saved.notes;
+        backupNotesRef.current = null;
+      }
 
-      if (legacyNotesRef.current.length > 0) {
-        clearLegacyThreadNotes(threadId);
-        legacyNotesRef.current = "";
+      if (shouldClearLegacyNotes) {
+        clearLegacyThreadNotes(saveThreadId);
+        if (isCurrentDocument()) {
+          legacyNotesRef.current = "";
+        }
       }
     } catch (error) {
-      setErrorMessage(normalizeThreadNotesErrorMessage(error));
+      if (isCurrentDocument()) {
+        setErrorMessage(normalizeThreadNotesErrorMessage(error));
+      }
     } finally {
-      saveInFlightRef.current = false;
+      if (isCurrentDocument()) {
+        saveInFlightRef.current = false;
 
-      if (queuedImmediateSaveRef.current || latestNotesRef.current !== lastSavedNotesRef.current) {
-        queuedImmediateSaveRef.current = false;
-        void flushSave();
-      } else {
-        setIsSaving(false);
+        if (
+          queuedImmediateSaveRef.current ||
+          latestNotesRef.current !== lastSavedNotesRef.current
+        ) {
+          queuedImmediateSaveRef.current = false;
+          void flushSave();
+        } else {
+          setIsSaving(false);
+        }
       }
     }
   }, [queryClient, threadId]);
@@ -143,6 +164,7 @@ export function useThreadNotesDocument(threadId: ThreadId): UseThreadNotesDocume
   );
 
   useEffect(() => {
+    documentVersionRef.current += 1;
     legacyNotesRef.current = readLegacyThreadNotes(threadId);
     backupNotesRef.current = readThreadNotesBackup(threadId);
     hydratedThreadIdRef.current = null;
