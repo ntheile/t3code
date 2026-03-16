@@ -4,6 +4,7 @@ import path from "node:path";
 
 import {
   DEFAULT_TERMINAL_ID,
+  LOCAL_EXECUTION_TARGET_ID,
   TerminalClearInput,
   TerminalCloseInput,
   TerminalOpenInput,
@@ -19,14 +20,18 @@ import { createLogger } from "../../logger";
 import { PtyAdapter, PtyAdapterShape, type PtyExitEvent, type PtyProcess } from "../Services/PTY";
 import { runProcess } from "../../processRunner";
 import { ServerConfig } from "../../config";
+import { ExecutionTargetService } from "../../executionTarget/Services/ExecutionTargetService";
+import { type SshConnectionSpec } from "../../executionTarget/ssh";
 import {
   ShellCandidate,
   TerminalError,
+  TerminalLaunchSpec,
   TerminalManager,
   TerminalManagerShape,
   TerminalSessionState,
   TerminalStartInput,
 } from "../Services/Manager";
+import { createSshTerminalProcess, type SshTerminalProcessInput } from "../sshTerminalProcess";
 
 const DEFAULT_HISTORY_LINE_LIMIT = 5_000;
 const DEFAULT_PERSIST_DEBOUNCE_MS = 40;
@@ -266,8 +271,12 @@ function toSafeTerminalId(terminalId: string): string {
   return Encoding.encodeBase64Url(terminalId);
 }
 
-function toSessionKey(threadId: string, terminalId: string): string {
-  return `${threadId}\u0000${terminalId}`;
+function toSafeTargetId(targetId: string): string {
+  return Encoding.encodeBase64Url(targetId);
+}
+
+function toSessionKey(targetId: string, threadId: string, terminalId: string): string {
+  return `${targetId}\u0000${threadId}\u0000${terminalId}`;
 }
 
 function shouldExcludeTerminalEnvKey(key: string): boolean {
@@ -316,6 +325,8 @@ interface TerminalManagerOptions {
   logsDir?: string;
   historyLineLimit?: number;
   ptyAdapter: PtyAdapterShape;
+  resolveLaunchSpec?: (targetId: string) => Promise<TerminalLaunchSpec>;
+  createSshProcess?: (input: SshTerminalProcessInput) => Promise<PtyProcess>;
   shellResolver?: () => string;
   subprocessChecker?: TerminalSubprocessChecker;
   subprocessPollIntervalMs?: number;
@@ -328,6 +339,8 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
   private readonly logsDir: string;
   private readonly historyLineLimit: number;
   private readonly ptyAdapter: PtyAdapterShape;
+  private readonly resolveLaunchSpec: (targetId: string) => Promise<TerminalLaunchSpec>;
+  private readonly createSshProcess: (input: SshTerminalProcessInput) => Promise<PtyProcess>;
   private readonly shellResolver: () => string;
   private readonly persistQueues = new Map<string, Promise<void>>();
   private readonly persistTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -348,6 +361,9 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
     this.logsDir = options.logsDir ?? path.resolve(process.cwd(), ".logs", "terminals");
     this.historyLineLimit = options.historyLineLimit ?? DEFAULT_HISTORY_LINE_LIMIT;
     this.ptyAdapter = options.ptyAdapter;
+    this.resolveLaunchSpec =
+      options.resolveLaunchSpec ?? (async () => ({ kind: "local" }) satisfies TerminalLaunchSpec);
+    this.createSshProcess = options.createSshProcess ?? createSshTerminalProcess;
     this.shellResolver = options.shellResolver ?? defaultShellResolver;
     this.persistDebounceMs = DEFAULT_PERSIST_DEBOUNCE_MS;
     this.subprocessChecker = options.subprocessChecker ?? defaultSubprocessChecker;
@@ -361,18 +377,21 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
 
   async open(raw: TerminalOpenInput): Promise<TerminalSessionSnapshot> {
     const input = decodeTerminalOpenInput(raw);
+    const targetId = input.targetId ?? LOCAL_EXECUTION_TARGET_ID;
     return this.runWithThreadLock(input.threadId, async () => {
-      await this.assertValidCwd(input.cwd);
+      const launchSpec = await this.resolveLaunchSpec(targetId);
+      await this.assertValidCwd(input.cwd, launchSpec);
 
-      const sessionKey = toSessionKey(input.threadId, input.terminalId);
+      const sessionKey = toSessionKey(targetId, input.threadId, input.terminalId);
       const existing = this.sessions.get(sessionKey);
       if (!existing) {
-        await this.flushPersistQueue(input.threadId, input.terminalId);
-        const history = await this.readHistory(input.threadId, input.terminalId);
+        await this.flushPersistQueue(targetId, input.threadId, input.terminalId);
+        const history = await this.readHistory(targetId, input.threadId, input.terminalId);
         const cols = input.cols ?? DEFAULT_OPEN_COLS;
         const rows = input.rows ?? DEFAULT_OPEN_ROWS;
         const session: TerminalSessionState = {
           threadId: input.threadId,
+          targetId,
           terminalId: input.terminalId,
           cwd: input.cwd,
           status: "starting",
@@ -387,11 +406,12 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
           unsubscribeData: null,
           unsubscribeExit: null,
           hasRunningSubprocess: false,
+          supportsSubprocessPolling: false,
           runtimeEnv: normalizedRuntimeEnv(input.env),
         };
         this.sessions.set(sessionKey, session);
         this.evictInactiveSessionsIfNeeded();
-        await this.startSession(session, { ...input, cols, rows }, "started");
+        await this.startSession(session, { ...input, targetId, cols, rows }, launchSpec, "started");
         return this.snapshot(session);
       }
 
@@ -407,11 +427,21 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
         existing.cwd = input.cwd;
         existing.runtimeEnv = nextRuntimeEnv;
         existing.history = "";
-        await this.persistHistory(existing.threadId, existing.terminalId, existing.history);
+        await this.persistHistory(
+          existing.targetId,
+          existing.threadId,
+          existing.terminalId,
+          existing.history,
+        );
       } else if (existing.status === "exited" || existing.status === "error") {
         existing.runtimeEnv = nextRuntimeEnv;
         existing.history = "";
-        await this.persistHistory(existing.threadId, existing.terminalId, existing.history);
+        await this.persistHistory(
+          existing.targetId,
+          existing.threadId,
+          existing.terminalId,
+          existing.history,
+        );
       } else if (currentRuntimeEnv !== nextRuntimeEnv) {
         existing.runtimeEnv = nextRuntimeEnv;
       }
@@ -419,7 +449,8 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
       if (!existing.process) {
         await this.startSession(
           existing,
-          { ...input, cols: targetCols, rows: targetRows },
+          { ...input, targetId, cols: targetCols, rows: targetRows },
+          launchSpec,
           "started",
         );
         return this.snapshot(existing);
@@ -438,7 +469,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
 
   async write(raw: TerminalWriteInput): Promise<void> {
     const input = decodeTerminalWriteInput(raw);
-    const session = this.requireSession(input.threadId, input.terminalId);
+    const session = this.requireSession(input.targetId, input.threadId, input.terminalId);
     if (!session.process || session.status !== "running") {
       if (session.status === "exited") {
         return;
@@ -452,28 +483,38 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
 
   async resize(raw: TerminalResizeInput): Promise<void> {
     const input = decodeTerminalResizeInput(raw);
-    const session = this.requireSession(input.threadId, input.terminalId);
-    if (!session.process || session.status !== "running") {
-      throw new Error(
-        `Terminal is not running for thread: ${input.threadId}, terminal: ${input.terminalId}`,
-      );
-    }
-    session.cols = input.cols;
-    session.rows = input.rows;
-    session.updatedAt = new Date().toISOString();
-    session.process.resize(input.cols, input.rows);
+    const targetId = input.targetId ?? LOCAL_EXECUTION_TARGET_ID;
+    await this.runWithThreadLock(input.threadId, async () => {
+      const session = this.sessions.get(toSessionKey(targetId, input.threadId, input.terminalId));
+      if (!session) {
+        return;
+      }
+      session.cols = input.cols;
+      session.rows = input.rows;
+      session.updatedAt = new Date().toISOString();
+      if (!session.process || session.status !== "running") {
+        return;
+      }
+      session.process.resize(input.cols, input.rows);
+    });
   }
 
   async clear(raw: TerminalClearInput): Promise<void> {
     const input = decodeTerminalClearInput(raw);
     await this.runWithThreadLock(input.threadId, async () => {
-      const session = this.requireSession(input.threadId, input.terminalId);
+      const session = this.requireSession(input.targetId, input.threadId, input.terminalId);
       session.history = "";
       session.updatedAt = new Date().toISOString();
-      await this.persistHistory(input.threadId, input.terminalId, session.history);
+      await this.persistHistory(
+        session.targetId,
+        input.threadId,
+        input.terminalId,
+        session.history,
+      );
       this.emitEvent({
         type: "cleared",
         threadId: input.threadId,
+        targetId: session.targetId,
         terminalId: input.terminalId,
         createdAt: new Date().toISOString(),
       });
@@ -482,16 +523,19 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
 
   async restart(raw: TerminalRestartInput): Promise<TerminalSessionSnapshot> {
     const input = decodeTerminalRestartInput(raw);
+    const targetId = input.targetId ?? LOCAL_EXECUTION_TARGET_ID;
     return this.runWithThreadLock(input.threadId, async () => {
-      await this.assertValidCwd(input.cwd);
+      const launchSpec = await this.resolveLaunchSpec(targetId);
+      await this.assertValidCwd(input.cwd, launchSpec);
 
-      const sessionKey = toSessionKey(input.threadId, input.terminalId);
+      const sessionKey = toSessionKey(targetId, input.threadId, input.terminalId);
       let session = this.sessions.get(sessionKey);
       if (!session) {
         const cols = input.cols ?? DEFAULT_OPEN_COLS;
         const rows = input.rows ?? DEFAULT_OPEN_ROWS;
         session = {
           threadId: input.threadId,
+          targetId,
           terminalId: input.terminalId,
           cwd: input.cwd,
           status: "starting",
@@ -506,6 +550,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
           unsubscribeData: null,
           unsubscribeExit: null,
           hasRunningSubprocess: false,
+          supportsSubprocessPolling: false,
           runtimeEnv: normalizedRuntimeEnv(input.env),
         };
         this.sessions.set(sessionKey, session);
@@ -520,8 +565,8 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
       const rows = input.rows ?? session.rows;
 
       session.history = "";
-      await this.persistHistory(input.threadId, input.terminalId, session.history);
-      await this.startSession(session, { ...input, cols, rows }, "restarted");
+      await this.persistHistory(targetId, input.threadId, input.terminalId, session.history);
+      await this.startSession(session, { ...input, targetId, cols, rows }, launchSpec, "restarted");
       return this.snapshot(session);
     });
   }
@@ -530,18 +575,23 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
     const input = decodeTerminalCloseInput(raw);
     await this.runWithThreadLock(input.threadId, async () => {
       if (input.terminalId) {
-        await this.closeSession(input.threadId, input.terminalId, input.deleteHistory === true);
+        await this.closeSession(
+          input.targetId,
+          input.threadId,
+          input.terminalId,
+          input.deleteHistory === true,
+        );
         return;
       }
 
       const threadSessions = this.sessionsForThread(input.threadId);
       for (const session of threadSessions) {
         this.stopProcess(session);
-        this.sessions.delete(toSessionKey(session.threadId, session.terminalId));
+        this.sessions.delete(toSessionKey(session.targetId, session.threadId, session.terminalId));
       }
       await Promise.all(
         threadSessions.map((session) =>
-          this.flushPersistQueue(session.threadId, session.terminalId),
+          this.flushPersistQueue(session.targetId, session.threadId, session.terminalId),
         ),
       );
 
@@ -575,6 +625,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
   private async startSession(
     session: TerminalSessionState,
     input: TerminalStartInput,
+    launchSpec: TerminalLaunchSpec,
     eventType: "started" | "restarted",
   ): Promise<void> {
     this.stopProcess(session);
@@ -586,65 +637,77 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
     session.exitCode = null;
     session.exitSignal = null;
     session.hasRunningSubprocess = false;
+    session.supportsSubprocessPolling = launchSpec.kind === "local";
     session.updatedAt = new Date().toISOString();
 
     let ptyProcess: PtyProcess | null = null;
     let startedShell: string | null = null;
     try {
-      const shellCandidates = resolveShellCandidates(this.shellResolver);
-      const terminalEnv = createTerminalSpawnEnv(process.env, session.runtimeEnv);
-      let lastSpawnError: unknown = null;
+      if (launchSpec.kind === "local") {
+        const shellCandidates = resolveShellCandidates(this.shellResolver);
+        const terminalEnv = createTerminalSpawnEnv(process.env, session.runtimeEnv);
+        let lastSpawnError: unknown = null;
 
-      const spawnWithCandidate = (candidate: ShellCandidate) =>
-        Effect.runPromise(
-          this.ptyAdapter.spawn({
-            shell: candidate.shell,
-            ...(candidate.args ? { args: candidate.args } : {}),
-            cwd: session.cwd,
-            cols: session.cols,
-            rows: session.rows,
-            env: terminalEnv,
-          }),
-        );
+        const spawnWithCandidate = (candidate: ShellCandidate) =>
+          Effect.runPromise(
+            this.ptyAdapter.spawn({
+              shell: candidate.shell,
+              ...(candidate.args ? { args: candidate.args } : {}),
+              cwd: session.cwd,
+              cols: session.cols,
+              rows: session.rows,
+              env: terminalEnv,
+            }),
+          );
 
-      const trySpawn = async (
-        candidates: ShellCandidate[],
-        index = 0,
-      ): Promise<{ process: PtyProcess; shellLabel: string } | null> => {
-        if (index >= candidates.length) {
-          return null;
-        }
-        const candidate = candidates[index];
-        if (!candidate) {
-          return null;
-        }
-
-        try {
-          const process = await spawnWithCandidate(candidate);
-          return { process, shellLabel: formatShellCandidate(candidate) };
-        } catch (error) {
-          lastSpawnError = error;
-          if (!isRetryableShellSpawnError(error)) {
-            throw error;
+        const trySpawn = async (
+          candidates: ShellCandidate[],
+          index = 0,
+        ): Promise<{ process: PtyProcess; shellLabel: string } | null> => {
+          if (index >= candidates.length) {
+            return null;
           }
-          return trySpawn(candidates, index + 1);
+          const candidate = candidates[index];
+          if (!candidate) {
+            return null;
+          }
+
+          try {
+            const process = await spawnWithCandidate(candidate);
+            return { process, shellLabel: formatShellCandidate(candidate) };
+          } catch (error) {
+            lastSpawnError = error;
+            if (!isRetryableShellSpawnError(error)) {
+              throw error;
+            }
+            return trySpawn(candidates, index + 1);
+          }
+        };
+
+        const spawnResult = await trySpawn(shellCandidates);
+        if (spawnResult) {
+          ptyProcess = spawnResult.process;
+          startedShell = spawnResult.shellLabel;
         }
-      };
 
-      const spawnResult = await trySpawn(shellCandidates);
-      if (spawnResult) {
-        ptyProcess = spawnResult.process;
-        startedShell = spawnResult.shellLabel;
-      }
-
-      if (!ptyProcess) {
-        const detail =
-          lastSpawnError instanceof Error ? lastSpawnError.message : "Terminal start failed";
-        const tried =
-          shellCandidates.length > 0
-            ? ` Tried shells: ${shellCandidates.map((candidate) => formatShellCandidate(candidate)).join(", ")}.`
-            : "";
-        throw new Error(`${detail}.${tried}`.trim());
+        if (!ptyProcess) {
+          const detail =
+            lastSpawnError instanceof Error ? lastSpawnError.message : "Terminal start failed";
+          const tried =
+            shellCandidates.length > 0
+              ? ` Tried shells: ${shellCandidates.map((candidate) => formatShellCandidate(candidate)).join(", ")}.`
+              : "";
+          throw new Error(`${detail}.${tried}`.trim());
+        }
+      } else {
+        ptyProcess = await this.createSshProcess({
+          connection: launchSpec satisfies SshConnectionSpec,
+          cwd: session.cwd,
+          ...(session.runtimeEnv ? { env: session.runtimeEnv } : {}),
+          cols: session.cols,
+          rows: session.rows,
+        });
+        startedShell = `ssh://${launchSpec.user ? `${launchSpec.user}@` : ""}${launchSpec.host}`;
       }
 
       session.process = ptyProcess;
@@ -661,6 +724,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
       this.emitEvent({
         type: eventType,
         threadId: session.threadId,
+        targetId: session.targetId,
         terminalId: session.terminalId,
         createdAt: new Date().toISOString(),
         snapshot: this.snapshot(session),
@@ -673,6 +737,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
       session.pid = null;
       session.process = null;
       session.hasRunningSubprocess = false;
+      session.supportsSubprocessPolling = false;
       session.updatedAt = new Date().toISOString();
       this.evictInactiveSessionsIfNeeded();
       this.updateSubprocessPollingState();
@@ -680,6 +745,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
       this.emitEvent({
         type: "error",
         threadId: session.threadId,
+        targetId: session.targetId,
         terminalId: session.terminalId,
         createdAt: new Date().toISOString(),
         message,
@@ -696,10 +762,11 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
   private onProcessData(session: TerminalSessionState, data: string): void {
     session.history = capHistory(`${session.history}${data}`, this.historyLineLimit);
     session.updatedAt = new Date().toISOString();
-    this.queuePersist(session.threadId, session.terminalId, session.history);
+    this.queuePersist(session.targetId, session.threadId, session.terminalId, session.history);
     this.emitEvent({
       type: "output",
       threadId: session.threadId,
+      targetId: session.targetId,
       terminalId: session.terminalId,
       createdAt: new Date().toISOString(),
       data,
@@ -719,6 +786,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
     this.emitEvent({
       type: "exited",
       threadId: session.threadId,
+      targetId: session.targetId,
       terminalId: session.terminalId,
       createdAt: new Date().toISOString(),
       exitCode: session.exitCode,
@@ -810,40 +878,51 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
     );
     const toEvict = inactiveSessions.length - this.maxRetainedInactiveSessions;
     for (const session of inactiveSessions.slice(0, toEvict)) {
-      const key = toSessionKey(session.threadId, session.terminalId);
+      const key = toSessionKey(session.targetId, session.threadId, session.terminalId);
       this.sessions.delete(key);
-      this.clearPersistTimer(session.threadId, session.terminalId);
+      this.clearPersistTimer(session.targetId, session.threadId, session.terminalId);
       this.pendingPersistHistory.delete(key);
       this.persistQueues.delete(key);
       this.clearKillEscalationTimer(session.process);
     }
   }
 
-  private queuePersist(threadId: string, terminalId: string, history: string): void {
-    const persistenceKey = toSessionKey(threadId, terminalId);
+  private queuePersist(
+    targetId: string,
+    threadId: string,
+    terminalId: string,
+    history: string,
+  ): void {
+    const persistenceKey = toSessionKey(targetId, threadId, terminalId);
     this.pendingPersistHistory.set(persistenceKey, history);
-    this.schedulePersist(threadId, terminalId);
+    this.schedulePersist(targetId, threadId, terminalId);
   }
 
   private async persistHistory(
+    targetId: string,
     threadId: string,
     terminalId: string,
     history: string,
   ): Promise<void> {
-    const persistenceKey = toSessionKey(threadId, terminalId);
-    this.clearPersistTimer(threadId, terminalId);
+    const persistenceKey = toSessionKey(targetId, threadId, terminalId);
+    this.clearPersistTimer(targetId, threadId, terminalId);
     this.pendingPersistHistory.delete(persistenceKey);
-    await this.enqueuePersistWrite(threadId, terminalId, history);
+    await this.enqueuePersistWrite(targetId, threadId, terminalId, history);
   }
 
   private enqueuePersistWrite(
+    targetId: string,
     threadId: string,
     terminalId: string,
     history: string,
   ): Promise<void> {
-    const persistenceKey = toSessionKey(threadId, terminalId);
+    const persistenceKey = toSessionKey(targetId, threadId, terminalId);
     const task = async () => {
-      await fs.promises.writeFile(this.historyPath(threadId, terminalId), history, "utf8");
+      await fs.promises.writeFile(
+        this.historyPath(targetId, threadId, terminalId),
+        history,
+        "utf8",
+      );
     };
     const previous = this.persistQueues.get(persistenceKey) ?? Promise.resolve();
     const next = previous
@@ -865,36 +944,40 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
         this.pendingPersistHistory.has(persistenceKey) &&
         !this.persistTimers.has(persistenceKey)
       ) {
-        this.schedulePersist(threadId, terminalId);
+        this.schedulePersist(targetId, threadId, terminalId);
       }
     });
     void finalized.catch(() => undefined);
     return finalized;
   }
 
-  private schedulePersist(threadId: string, terminalId: string): void {
-    const persistenceKey = toSessionKey(threadId, terminalId);
+  private schedulePersist(targetId: string, threadId: string, terminalId: string): void {
+    const persistenceKey = toSessionKey(targetId, threadId, terminalId);
     if (this.persistTimers.has(persistenceKey)) return;
     const timer = setTimeout(() => {
       this.persistTimers.delete(persistenceKey);
       const pendingHistory = this.pendingPersistHistory.get(persistenceKey);
       if (pendingHistory === undefined) return;
       this.pendingPersistHistory.delete(persistenceKey);
-      void this.enqueuePersistWrite(threadId, terminalId, pendingHistory);
+      void this.enqueuePersistWrite(targetId, threadId, terminalId, pendingHistory);
     }, this.persistDebounceMs);
     this.persistTimers.set(persistenceKey, timer);
   }
 
-  private clearPersistTimer(threadId: string, terminalId: string): void {
-    const persistenceKey = toSessionKey(threadId, terminalId);
+  private clearPersistTimer(targetId: string, threadId: string, terminalId: string): void {
+    const persistenceKey = toSessionKey(targetId, threadId, terminalId);
     const timer = this.persistTimers.get(persistenceKey);
     if (!timer) return;
     clearTimeout(timer);
     this.persistTimers.delete(persistenceKey);
   }
 
-  private async readHistory(threadId: string, terminalId: string): Promise<string> {
-    const nextPath = this.historyPath(threadId, terminalId);
+  private async readHistory(
+    targetId: string,
+    threadId: string,
+    terminalId: string,
+  ): Promise<string> {
+    const nextPath = this.historyPath(targetId, threadId, terminalId);
     try {
       const raw = await fs.promises.readFile(nextPath, "utf8");
       const capped = capHistory(raw, this.historyLineLimit);
@@ -908,7 +991,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
       }
     }
 
-    if (terminalId !== DEFAULT_TERMINAL_ID) {
+    if (targetId !== LOCAL_EXECUTION_TARGET_ID || terminalId !== DEFAULT_TERMINAL_ID) {
       return "";
     }
 
@@ -937,9 +1020,15 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
     }
   }
 
-  private async deleteHistory(threadId: string, terminalId: string): Promise<void> {
-    const deletions = [fs.promises.rm(this.historyPath(threadId, terminalId), { force: true })];
-    if (terminalId === DEFAULT_TERMINAL_ID) {
+  private async deleteHistory(
+    targetId: string,
+    threadId: string,
+    terminalId: string,
+  ): Promise<void> {
+    const deletions = [
+      fs.promises.rm(this.historyPath(targetId, threadId, terminalId), { force: true }),
+    ];
+    if (targetId === LOCAL_EXECUTION_TARGET_ID && terminalId === DEFAULT_TERMINAL_ID) {
       deletions.push(fs.promises.rm(this.legacyHistoryPath(threadId), { force: true }));
     }
     try {
@@ -953,15 +1042,19 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
     }
   }
 
-  private async flushPersistQueue(threadId: string, terminalId: string): Promise<void> {
-    const persistenceKey = toSessionKey(threadId, terminalId);
-    this.clearPersistTimer(threadId, terminalId);
+  private async flushPersistQueue(
+    targetId: string,
+    threadId: string,
+    terminalId: string,
+  ): Promise<void> {
+    const persistenceKey = toSessionKey(targetId, threadId, terminalId);
+    this.clearPersistTimer(targetId, threadId, terminalId);
 
     while (true) {
       const pendingHistory = this.pendingPersistHistory.get(persistenceKey);
       if (pendingHistory !== undefined) {
         this.pendingPersistHistory.delete(persistenceKey);
-        await this.enqueuePersistWrite(threadId, terminalId, pendingHistory);
+        await this.enqueuePersistWrite(targetId, threadId, terminalId, pendingHistory);
       }
 
       const pending = this.persistQueues.get(persistenceKey);
@@ -974,7 +1067,8 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
 
   private updateSubprocessPollingState(): void {
     const hasRunningSessions = [...this.sessions.values()].some(
-      (session) => session.status === "running" && session.pid !== null,
+      (session) =>
+        session.status === "running" && session.pid !== null && session.supportsSubprocessPolling,
     );
     if (hasRunningSessions) {
       this.ensureSubprocessPolling();
@@ -1003,7 +1097,9 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
 
     const runningSessions = [...this.sessions.values()].filter(
       (session): session is TerminalSessionState & { pid: number } =>
-        session.status === "running" && Number.isInteger(session.pid),
+        session.status === "running" &&
+        session.supportsSubprocessPolling &&
+        Number.isInteger(session.pid),
     );
     if (runningSessions.length === 0) {
       this.stopSubprocessPolling();
@@ -1028,7 +1124,9 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
             return;
           }
 
-          const liveSession = this.sessions.get(toSessionKey(session.threadId, session.terminalId));
+          const liveSession = this.sessions.get(
+            toSessionKey(session.targetId, session.threadId, session.terminalId),
+          );
           if (!liveSession || liveSession.status !== "running" || liveSession.pid !== terminalPid) {
             return;
           }
@@ -1041,6 +1139,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
           this.emitEvent({
             type: "activity",
             threadId: liveSession.threadId,
+            targetId: liveSession.targetId,
             terminalId: liveSession.terminalId,
             createdAt: new Date().toISOString(),
             hasRunningSubprocess,
@@ -1052,7 +1151,10 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
     }
   }
 
-  private async assertValidCwd(cwd: string): Promise<void> {
+  private async assertValidCwd(cwd: string, launchSpec: TerminalLaunchSpec): Promise<void> {
+    if (launchSpec.kind !== "local") {
+      return;
+    }
     let stats: fs.Stats;
     try {
       stats = await fs.promises.stat(cwd);
@@ -1068,20 +1170,19 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
   }
 
   private async closeSession(
+    targetId: string | undefined,
     threadId: string,
     terminalId: string,
     deleteHistory: boolean,
   ): Promise<void> {
-    const key = toSessionKey(threadId, terminalId);
-    const session = this.sessions.get(key);
-    if (session) {
-      this.stopProcess(session);
-      this.sessions.delete(key);
-    }
+    const session = this.requireSession(targetId, threadId, terminalId);
+    const key = toSessionKey(session.targetId, threadId, terminalId);
+    this.stopProcess(session);
+    this.sessions.delete(key);
     this.updateSubprocessPollingState();
-    await this.flushPersistQueue(threadId, terminalId);
+    await this.flushPersistQueue(session.targetId, threadId, terminalId);
     if (deleteHistory) {
-      await this.deleteHistory(threadId, terminalId);
+      await this.deleteHistory(session.targetId, threadId, terminalId);
     }
   }
 
@@ -1112,17 +1213,33 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
     }
   }
 
-  private requireSession(threadId: string, terminalId: string): TerminalSessionState {
-    const session = this.sessions.get(toSessionKey(threadId, terminalId));
-    if (!session) {
-      throw new Error(`Unknown terminal thread: ${threadId}, terminal: ${terminalId}`);
+  private requireSession(
+    targetId: string | undefined,
+    threadId: string,
+    terminalId: string,
+  ): TerminalSessionState {
+    const exactTargetId = targetId ?? LOCAL_EXECUTION_TARGET_ID;
+    const exactSession = this.sessions.get(toSessionKey(exactTargetId, threadId, terminalId));
+    if (exactSession) {
+      return exactSession;
     }
-    return session;
+
+    if (targetId === undefined) {
+      const matchingSessions = [...this.sessions.values()].filter(
+        (session) => session.threadId === threadId && session.terminalId === terminalId,
+      );
+      if (matchingSessions.length === 1) {
+        return matchingSessions[0]!;
+      }
+    }
+
+    throw new Error(`Unknown terminal thread: ${threadId}, terminal: ${terminalId}`);
   }
 
   private snapshot(session: TerminalSessionState): TerminalSessionSnapshot {
     return {
       threadId: session.threadId,
+      targetId: session.targetId,
       terminalId: session.terminalId,
       cwd: session.cwd,
       status: session.status,
@@ -1138,12 +1255,19 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
     this.emit("event", event);
   }
 
-  private historyPath(threadId: string, terminalId: string): string {
+  private historyPath(targetId: string, threadId: string, terminalId: string): string {
     const threadPart = toSafeThreadId(threadId);
-    if (terminalId === DEFAULT_TERMINAL_ID) {
+    if (targetId === LOCAL_EXECUTION_TARGET_ID && terminalId === DEFAULT_TERMINAL_ID) {
       return path.join(this.logsDir, `${threadPart}.log`);
     }
-    return path.join(this.logsDir, `${threadPart}_${toSafeTerminalId(terminalId)}.log`);
+    const targetPart = toSafeTargetId(targetId);
+    if (terminalId === DEFAULT_TERMINAL_ID) {
+      return path.join(this.logsDir, `${threadPart}_${targetPart}.log`);
+    }
+    return path.join(
+      this.logsDir,
+      `${threadPart}_${targetPart}_${toSafeTerminalId(terminalId)}.log`,
+    );
   }
 
   private legacyHistoryPath(threadId: string): string {
@@ -1177,8 +1301,35 @@ export const TerminalManagerLive = Layer.effect(
     const logsDir = join(stateDir, "logs", "terminals");
 
     const ptyAdapter = yield* PtyAdapter;
+    const executionTargets = yield* ExecutionTargetService;
     const runtime = yield* Effect.acquireRelease(
-      Effect.sync(() => new TerminalManagerRuntime({ logsDir, ptyAdapter })),
+      Effect.sync(
+        () =>
+          new TerminalManagerRuntime({
+            logsDir,
+            ptyAdapter,
+            resolveLaunchSpec: async (targetId) => {
+              const target = await Effect.runPromise(executionTargets.getByIdForRuntime(targetId));
+              if (target.connection.kind === "local") {
+                return { kind: "local" } satisfies TerminalLaunchSpec;
+              }
+              if (target.connection.kind === "ssh") {
+                return {
+                  kind: "ssh",
+                  host: target.connection.host,
+                  ...(target.connection.port !== undefined ? { port: target.connection.port } : {}),
+                  ...(target.connection.user !== undefined ? { user: target.connection.user } : {}),
+                  ...(target.connection.password !== undefined
+                    ? { password: target.connection.password }
+                    : {}),
+                } satisfies TerminalLaunchSpec;
+              }
+              throw new Error(
+                `Remote terminal runtime is not implemented yet for target '${target.label}' (${target.kind}).`,
+              );
+            },
+          }),
+      ),
       (r) => Effect.sync(() => r.dispose()),
     );
 

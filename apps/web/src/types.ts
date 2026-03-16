@@ -1,4 +1,5 @@
 import type {
+  ExecutionTargetId,
   OrchestrationLatestTurn,
   OrchestrationProposedPlanId,
   OrchestrationSessionStatus,
@@ -78,6 +79,7 @@ export interface Project {
   id: ProjectId;
   name: string;
   cwd: string;
+  targetId: ExecutionTargetId;
   model: string;
   expanded: boolean;
   scripts: ProjectScript[];
@@ -87,6 +89,7 @@ export interface Thread {
   id: ThreadId;
   codexThreadId: string | null;
   projectId: ProjectId;
+  targetId: ExecutionTargetId;
   title: string;
   model: string;
   runtimeMode: RuntimeMode;
@@ -105,6 +108,7 @@ export interface Thread {
 }
 
 export interface ThreadSession {
+  targetId: ExecutionTargetId;
   provider: ProviderKind;
   status: SessionPhase | "error" | "closed";
   activeTurnId?: TurnId | undefined;

@@ -22,6 +22,7 @@ import {
   type CodexAppServerSendTurnInput,
 } from "../../codexAppServerManager.ts";
 import { ServerConfig } from "../../config.ts";
+import { ExecutionTargetRuntime } from "../../executionTarget/Services/ExecutionTargetRuntime.ts";
 import { CodexAdapter } from "../Services/CodexAdapter.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
 import { makeCodexAdapterLive } from "./CodexAdapter.ts";
@@ -146,10 +147,15 @@ const providerSessionDirectoryTestLayer = Layer.succeed(ProviderSessionDirectory
   listThreadIds: () => Effect.succeed([]),
 });
 
+const localExecutionTargetRuntimeLayer = Layer.succeed(ExecutionTargetRuntime, {
+  startProviderSession: (input, handlers) => Effect.tryPromise(() => handlers.startLocal(input)),
+});
+
 const validationManager = new FakeCodexManager();
 const validationLayer = it.layer(
   makeCodexAdapterLive({ manager: validationManager }).pipe(
     Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+    Layer.provideMerge(localExecutionTargetRuntimeLayer),
     Layer.provideMerge(providerSessionDirectoryTestLayer),
     Layer.provideMerge(NodeServices.layer),
   ),
@@ -178,6 +184,7 @@ validationLayer("CodexAdapterLive validation", (it) => {
         threadId: asThreadId("thread-1"),
         model: "gpt-5.3-codex",
         serviceTier: "fast",
+        targetId: undefined,
         runtimeMode: "full-access",
       });
     }),
@@ -191,6 +198,60 @@ sessionErrorManager.sendTurnImpl.mockImplementation(async () => {
 const sessionErrorLayer = it.layer(
   makeCodexAdapterLive({ manager: sessionErrorManager }).pipe(
     Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+    Layer.provideMerge(localExecutionTargetRuntimeLayer),
+    Layer.provideMerge(providerSessionDirectoryTestLayer),
+    Layer.provideMerge(NodeServices.layer),
+  ),
+);
+
+const sshExecutionTargetRuntimeLayer = Layer.succeed(ExecutionTargetRuntime, {
+  startProviderSession: (input, handlers) =>
+    Effect.tryPromise(() =>
+      handlers.startSsh(input, {
+        kind: "ssh",
+        host: "staging.example.com",
+        port: 2222,
+        user: "deploy",
+      }),
+    ),
+});
+
+const remoteRuntimeLayer = it.layer(
+  makeCodexAdapterLive({ manager: validationManager }).pipe(
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+    Layer.provideMerge(sshExecutionTargetRuntimeLayer),
+    Layer.provideMerge(providerSessionDirectoryTestLayer),
+    Layer.provideMerge(NodeServices.layer),
+  ),
+);
+
+const sshExecutionTargetRuntimeWithResolvedCodexLayer = Layer.succeed(ExecutionTargetRuntime, {
+  startProviderSession: (input, handlers) =>
+    Effect.tryPromise(() =>
+      handlers.startSsh(
+        {
+          ...input,
+          providerOptions: {
+            codex: {
+              binaryPath: "/home/deploy/.npm-global/bin/codex",
+              homePath: "/home/deploy/.codex",
+            },
+          },
+        },
+        {
+          kind: "ssh",
+          host: "staging.example.com",
+          port: 2222,
+          user: "deploy",
+        },
+      ),
+    ),
+});
+
+const remoteRuntimeWithResolvedCodexLayer = it.layer(
+  makeCodexAdapterLive({ manager: validationManager }).pipe(
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+    Layer.provideMerge(sshExecutionTargetRuntimeWithResolvedCodexLayer),
     Layer.provideMerge(providerSessionDirectoryTestLayer),
     Layer.provideMerge(NodeServices.layer),
   ),
@@ -254,10 +315,79 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
   );
 });
 
+remoteRuntimeLayer("CodexAdapterLive execution target runtime", (it) => {
+  it.effect("routes SSH-backed provider startup through the manager launch spec", () =>
+    Effect.gen(function* () {
+      validationManager.startSessionImpl.mockClear();
+      const adapter = yield* CodexAdapter;
+      const result = yield* adapter
+        .startSession({
+          provider: "codex",
+          threadId: asThreadId("thread-remote"),
+          targetId: "staging-box" as ProviderSession["targetId"],
+          runtimeMode: "full-access",
+        })
+        .pipe(Effect.orDie);
+
+      assert.equal(result.threadId, "thread-remote");
+      assert.deepStrictEqual(validationManager.startSessionImpl.mock.calls[0]?.[0], {
+        provider: "codex",
+        threadId: asThreadId("thread-remote"),
+        targetId: "staging-box",
+        runtimeMode: "full-access",
+        launch: {
+          kind: "ssh",
+          host: "staging.example.com",
+          port: 2222,
+          user: "deploy",
+        },
+      });
+    }),
+  );
+});
+
+remoteRuntimeWithResolvedCodexLayer("CodexAdapterLive remote codex launch overrides", (it) => {
+  it.effect("forwards runtime-resolved provider options to the manager", () =>
+    Effect.gen(function* () {
+      validationManager.startSessionImpl.mockClear();
+      const adapter = yield* CodexAdapter;
+
+      yield* adapter
+        .startSession({
+          provider: "codex",
+          threadId: asThreadId("thread-remote-resolved"),
+          targetId: "staging-box" as ProviderSession["targetId"],
+          runtimeMode: "full-access",
+        })
+        .pipe(Effect.orDie);
+
+      assert.deepStrictEqual(validationManager.startSessionImpl.mock.calls[0]?.[0], {
+        provider: "codex",
+        threadId: asThreadId("thread-remote-resolved"),
+        targetId: "staging-box",
+        runtimeMode: "full-access",
+        providerOptions: {
+          codex: {
+            binaryPath: "/home/deploy/.npm-global/bin/codex",
+            homePath: "/home/deploy/.codex",
+          },
+        },
+        launch: {
+          kind: "ssh",
+          host: "staging.example.com",
+          port: 2222,
+          user: "deploy",
+        },
+      });
+    }),
+  );
+});
+
 const lifecycleManager = new FakeCodexManager();
 const lifecycleLayer = it.layer(
   makeCodexAdapterLive({ manager: lifecycleManager }).pipe(
     Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+    Layer.provideMerge(localExecutionTargetRuntimeLayer),
     Layer.provideMerge(providerSessionDirectoryTestLayer),
     Layer.provideMerge(NodeServices.layer),
   ),

@@ -1,5 +1,6 @@
 import { Schema } from "effect";
 import { TrimmedNonEmptyString } from "./baseSchemas";
+import { ExecutionTargetId } from "./executionTarget";
 
 export const DEFAULT_TERMINAL_ID = "default";
 
@@ -25,6 +26,7 @@ const TerminalIdWithDefaultSchema = TerminalIdSchema.pipe(
 
 export const TerminalThreadInput = Schema.Struct({
   threadId: TrimmedNonEmptyStringSchema,
+  targetId: Schema.optional(ExecutionTargetId),
 });
 export type TerminalThreadInput = Schema.Codec.Encoded<typeof TerminalThreadInput>;
 
@@ -80,6 +82,7 @@ export type TerminalSessionStatus = typeof TerminalSessionStatus.Type;
 
 export const TerminalSessionSnapshot = Schema.Struct({
   threadId: Schema.String.check(Schema.isNonEmpty()),
+  targetId: Schema.optional(ExecutionTargetId),
   terminalId: Schema.String.check(Schema.isNonEmpty()),
   cwd: Schema.String.check(Schema.isNonEmpty()),
   status: TerminalSessionStatus,
@@ -93,6 +96,7 @@ export type TerminalSessionSnapshot = typeof TerminalSessionSnapshot.Type;
 
 const TerminalEventBaseSchema = Schema.Struct({
   threadId: Schema.String.check(Schema.isNonEmpty()),
+  targetId: Schema.optional(ExecutionTargetId),
   terminalId: Schema.String.check(Schema.isNonEmpty()),
   createdAt: Schema.String,
 });

@@ -8,6 +8,7 @@ export default Effect.gen(function* () {
     CREATE TABLE IF NOT EXISTS provider_session_runtime (
       thread_id TEXT PRIMARY KEY,
       provider_name TEXT NOT NULL,
+      target_id TEXT NOT NULL DEFAULT 'local',
       adapter_key TEXT NOT NULL,
       runtime_mode TEXT NOT NULL DEFAULT 'full-access',
       status TEXT NOT NULL,

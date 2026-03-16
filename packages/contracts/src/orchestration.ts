@@ -1,5 +1,6 @@
 import { Option, Schema, SchemaIssue, Struct } from "effect";
 import { ProviderModelOptions } from "./model";
+import { ExecutionTargetId, LOCAL_EXECUTION_TARGET_ID } from "./executionTarget";
 import {
   ApprovalRequestId,
   CheckpointRef,
@@ -133,6 +134,9 @@ export const OrchestrationProject = Schema.Struct({
   id: ProjectId,
   title: TrimmedNonEmptyString,
   workspaceRoot: TrimmedNonEmptyString,
+  targetId: Schema.optional(
+    ExecutionTargetId.pipe(Schema.withDecodingDefault(() => LOCAL_EXECUTION_TARGET_ID)),
+  ),
   defaultModel: Schema.NullOr(TrimmedNonEmptyString),
   scripts: Schema.Array(ProjectScript),
   createdAt: IsoDateTime,
@@ -181,6 +185,9 @@ export type OrchestrationSessionStatus = typeof OrchestrationSessionStatus.Type;
 
 export const OrchestrationSession = Schema.Struct({
   threadId: ThreadId,
+  targetId: Schema.optional(
+    ExecutionTargetId.pipe(Schema.withDecodingDefault(() => LOCAL_EXECUTION_TARGET_ID)),
+  ),
   status: OrchestrationSessionStatus,
   providerName: Schema.NullOr(TrimmedNonEmptyString),
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(() => DEFAULT_RUNTIME_MODE)),
@@ -253,6 +260,9 @@ export type OrchestrationLatestTurn = typeof OrchestrationLatestTurn.Type;
 export const OrchestrationThread = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
+  targetId: Schema.optional(
+    ExecutionTargetId.pipe(Schema.withDecodingDefault(() => LOCAL_EXECUTION_TARGET_ID)),
+  ),
   title: TrimmedNonEmptyString,
   model: TrimmedNonEmptyString,
   runtimeMode: RuntimeMode,
@@ -287,6 +297,9 @@ export const ProjectCreateCommand = Schema.Struct({
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
   workspaceRoot: TrimmedNonEmptyString,
+  targetId: Schema.optional(
+    ExecutionTargetId.pipe(Schema.withDecodingDefault(() => LOCAL_EXECUTION_TARGET_ID)),
+  ),
   defaultModel: Schema.optional(TrimmedNonEmptyString),
   createdAt: IsoDateTime,
 });
@@ -297,6 +310,9 @@ const ProjectMetaUpdateCommand = Schema.Struct({
   projectId: ProjectId,
   title: Schema.optional(TrimmedNonEmptyString),
   workspaceRoot: Schema.optional(TrimmedNonEmptyString),
+  targetId: Schema.optional(
+    ExecutionTargetId.pipe(Schema.withDecodingDefault(() => LOCAL_EXECUTION_TARGET_ID)),
+  ),
   defaultModel: Schema.optional(TrimmedNonEmptyString),
   scripts: Schema.optional(Schema.Array(ProjectScript)),
 });
@@ -312,6 +328,9 @@ const ThreadCreateCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   projectId: ProjectId,
+  targetId: Schema.optional(
+    ExecutionTargetId.pipe(Schema.withDecodingDefault(() => LOCAL_EXECUTION_TARGET_ID)),
+  ),
   title: TrimmedNonEmptyString,
   model: TrimmedNonEmptyString,
   runtimeMode: RuntimeMode,
@@ -589,6 +608,9 @@ export const ProjectCreatedPayload = Schema.Struct({
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
   workspaceRoot: TrimmedNonEmptyString,
+  targetId: Schema.optional(
+    ExecutionTargetId.pipe(Schema.withDecodingDefault(() => LOCAL_EXECUTION_TARGET_ID)),
+  ),
   defaultModel: Schema.NullOr(TrimmedNonEmptyString),
   scripts: Schema.Array(ProjectScript),
   createdAt: IsoDateTime,
@@ -599,6 +621,9 @@ export const ProjectMetaUpdatedPayload = Schema.Struct({
   projectId: ProjectId,
   title: Schema.optional(TrimmedNonEmptyString),
   workspaceRoot: Schema.optional(TrimmedNonEmptyString),
+  targetId: Schema.optional(
+    ExecutionTargetId.pipe(Schema.withDecodingDefault(() => LOCAL_EXECUTION_TARGET_ID)),
+  ),
   defaultModel: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   scripts: Schema.optional(Schema.Array(ProjectScript)),
   updatedAt: IsoDateTime,
@@ -612,6 +637,9 @@ export const ProjectDeletedPayload = Schema.Struct({
 export const ThreadCreatedPayload = Schema.Struct({
   threadId: ThreadId,
   projectId: ProjectId,
+  targetId: Schema.optional(
+    ExecutionTargetId.pipe(Schema.withDecodingDefault(() => LOCAL_EXECUTION_TARGET_ID)),
+  ),
   title: TrimmedNonEmptyString,
   model: TrimmedNonEmptyString,
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(() => DEFAULT_RUNTIME_MODE)),

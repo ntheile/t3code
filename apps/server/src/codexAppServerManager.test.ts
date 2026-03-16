@@ -6,6 +6,8 @@ import path from "node:path";
 import { ApprovalRequestId, ThreadId } from "@t3tools/contracts";
 
 import {
+  buildRemoteCodexProbeCommand,
+  buildRemoteCodexShellCommand,
   buildCodexInitializeParams,
   CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS,
   CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS,
@@ -368,6 +370,32 @@ describe("startSession", () => {
       versionCheck.mockRestore();
       manager.stopAll();
     }
+  });
+});
+
+describe("remote Codex SSH launch", () => {
+  it("probes login shells before falling back to sh", () => {
+    const script = buildRemoteCodexShellCommand({
+      binaryPath: "codex",
+      cwd: "/remote/worktree",
+      homePath: "/remote/.codex",
+      args: ["app-server"],
+    });
+
+    expect(buildRemoteCodexProbeCommand("codex")).toBe("command -v 'codex' >/dev/null 2>&1");
+    expect(script).toContain('for candidate in "${SHELL:-}"');
+    expect(script).toContain('case "${candidate##*/}" in');
+    expect(script).toContain('"$candidate" -lc');
+    expect(script).toContain("exec sh -lc");
+    expect(script).toContain("/remote/worktree");
+    expect(script).toContain("CODEX_HOME");
+    expect(script).toContain("app-server");
+  });
+
+  it("uses an executable probe for explicit binary paths", () => {
+    expect(buildRemoteCodexProbeCommand("/opt/codex/bin/codex")).toBe(
+      "[ -x '/opt/codex/bin/codex' ]",
+    );
   });
 });
 

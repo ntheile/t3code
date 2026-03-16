@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Effect, Exit, Layer, PlatformError, PubSub, Scope, Stream } from "effect";
+import { Effect, Exit, Layer, Option, PlatformError, PubSub, Scope, Stream } from "effect";
 import { describe, expect, it, afterEach, vi } from "vitest";
 import { createServer } from "./wsServer";
 import WebSocket from "ws";
@@ -44,8 +44,10 @@ import type {
 import { TerminalManager, type TerminalManagerShape } from "./terminal/Services/Manager";
 import { makeSqlitePersistenceLive, SqlitePersistenceMemory } from "./persistence/Layers/Sqlite";
 import { SqlClient, SqlError } from "effect/unstable/sql";
+import { ProviderSessionDirectory } from "./provider/Services/ProviderSessionDirectory";
 import { ProviderService, type ProviderServiceShape } from "./provider/Services/ProviderService";
 import { ProviderHealth, type ProviderHealthShape } from "./provider/Services/ProviderHealth";
+import { ProviderSessionDirectoryPersistenceError } from "./provider/Errors";
 import { Open, type OpenShape } from "./open";
 import { GitManager, type GitManagerShape } from "./git/Services/GitManager.ts";
 import type { GitCoreShape } from "./git/Services/GitCore.ts";
@@ -453,6 +455,7 @@ function expectAvailableEditors(value: unknown): void {
 
 describe("WebSocket Server", () => {
   let server: Http.Server | null = null;
+  let upstreamServer: Http.Server | null = null;
   let serverScope: Scope.Closeable | null = null;
   const connections: WebSocket[] = [];
   const tempDirs: string[] = [];
@@ -476,7 +479,7 @@ describe("WebSocket Server", () => {
       authToken?: string;
       stateDir?: string;
       staticDir?: string;
-      providerLayer?: Layer.Layer<ProviderService, never>;
+      providerLayer?: Layer.Layer<ProviderService | ProviderSessionDirectory, never>;
       providerHealth?: ProviderHealthShape;
       open?: OpenShape;
       gitManager?: GitManagerShape;
@@ -565,6 +568,18 @@ describe("WebSocket Server", () => {
       ws.close();
     }
     connections.length = 0;
+    if (upstreamServer) {
+      await new Promise<void>((resolve, reject) => {
+        upstreamServer?.close((error) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+          resolve();
+        });
+      });
+      upstreamServer = null;
+    }
     await closeTestServer();
     server = null;
     for (const dir of tempDirs.splice(0, tempDirs.length)) {
@@ -808,6 +823,64 @@ describe("WebSocket Server", () => {
         );
       }),
     ).toBe(true);
+  });
+
+  it("proxies dev HTTP requests instead of redirecting to the Vite server", async () => {
+    upstreamServer = Http.createServer((request, response) => {
+      response.writeHead(200, {
+        "Content-Type": "text/html; charset=utf-8",
+        "X-Upstream-Path": request.url ?? "/",
+      });
+      response.end("<!doctype html><title>vite-proxy</title>");
+    });
+    await new Promise<void>((resolve, reject) => {
+      upstreamServer?.listen(0, "127.0.0.1", (error?: Error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      });
+    });
+
+    const upstreamAddress = upstreamServer.address();
+    const upstreamPort =
+      typeof upstreamAddress === "object" && upstreamAddress !== null ? upstreamAddress.port : 0;
+    expect(upstreamPort).toBeGreaterThan(0);
+
+    server = await createTestServer({
+      cwd: "/test/project",
+      devUrl: `http://127.0.0.1:${upstreamPort}`,
+    });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    expect(port).toBeGreaterThan(0);
+
+    const response = await new Promise<{
+      statusCode: number;
+      headers: Http.IncomingHttpHeaders;
+      body: string;
+    }>((resolve, reject) => {
+      const request = Http.get(`http://127.0.0.1:${port}/`, (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk) => {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        });
+        res.on("end", () => {
+          resolve({
+            statusCode: res.statusCode ?? 0,
+            headers: res.headers,
+            body: Buffer.concat(chunks).toString("utf8"),
+          });
+        });
+      });
+      request.on("error", reject);
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers.location).toBeUndefined();
+    expect(response.headers["x-upstream-path"]).toBe("/");
+    expect(response.body).toContain("vite-proxy");
   });
 
   it("responds to server.getConfig", async () => {
@@ -1230,7 +1303,22 @@ describe("WebSocket Server", () => {
       rollbackConversation: () => unsupported(),
       streamEvents: Stream.fromPubSub(runtimeEventPubSub),
     };
-    const providerLayer = Layer.succeed(ProviderService, providerService);
+    const providerLayer = Layer.merge(
+      Layer.succeed(ProviderService, providerService),
+      Layer.succeed(ProviderSessionDirectory, {
+        upsert: () => Effect.void,
+        getProvider: () =>
+          Effect.fail(
+            new ProviderSessionDirectoryPersistenceError({
+              operation: "wsServer.test.getProvider",
+              detail: "No provider binding",
+            }),
+          ),
+        getBinding: () => Effect.succeed(Option.none()),
+        remove: () => Effect.void,
+        listThreadIds: () => Effect.succeed([]),
+      }),
+    );
 
     server = await createTestServer({
       cwd: "/test",

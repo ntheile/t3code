@@ -1,6 +1,18 @@
 import { FitAddon } from "@xterm/addon-fit";
-import { Plus, SquareSplitHorizontal, TerminalSquare, Trash2, XIcon } from "lucide-react";
-import { type ThreadId } from "@t3tools/contracts";
+import {
+  Maximize2,
+  Minimize2,
+  Plus,
+  SquareSplitHorizontal,
+  TerminalSquare,
+  Trash2,
+  XIcon,
+} from "lucide-react";
+import {
+  LOCAL_EXECUTION_TARGET_ID,
+  type ExecutionTargetId,
+  type ThreadId,
+} from "@t3tools/contracts";
 import { Terminal, type ITheme } from "@xterm/xterm";
 import {
   type PointerEvent as ReactPointerEvent,
@@ -12,6 +24,7 @@ import {
   useState,
 } from "react";
 import { Popover, PopoverPopup, PopoverTrigger } from "~/components/ui/popover";
+import { toastManager } from "./ui/toast";
 import { openInPreferredEditor } from "../editorPreferences";
 import {
   extractTerminalLinks,
@@ -26,13 +39,38 @@ import {
   type ThreadTerminalGroup,
 } from "../types";
 import { readNativeApi } from "~/nativeApi";
+import { readUiScaleFromDocument, terminalFontSizePxForUiScale } from "../lib/uiScale";
+import { readViewportHeight, subscribeToViewportChanges } from "../lib/viewport";
 
 const MIN_DRAWER_HEIGHT = 180;
 const MAX_DRAWER_HEIGHT_RATIO = 0.75;
+const MOBILE_TERMINAL_MIN_COLS = 80;
+const TERMINAL_APPROX_CELL_WIDTH_FACTOR = 0.62;
+const TERMINAL_HORIZONTAL_PADDING_PX = 24;
+const TERMINAL_LINE_HEIGHT = 1.2;
+
+function currentTerminalFontSizePx(): number {
+  return terminalFontSizePxForUiScale(readUiScaleFromDocument());
+}
+
+function shouldUseWideMobileTerminalLayout(): boolean {
+  return window.matchMedia("(max-width: 767px) and (pointer: coarse)").matches;
+}
+
+function minimumTerminalWidthPx(fontSizePx: number): number {
+  return Math.ceil(
+    fontSizePx * TERMINAL_APPROX_CELL_WIDTH_FACTOR * MOBILE_TERMINAL_MIN_COLS +
+      TERMINAL_HORIZONTAL_PADDING_PX,
+  );
+}
 
 function maxDrawerHeight(): number {
-  if (typeof window === "undefined") return DEFAULT_THREAD_TERMINAL_HEIGHT;
-  return Math.max(MIN_DRAWER_HEIGHT, Math.floor(window.innerHeight * MAX_DRAWER_HEIGHT_RATIO));
+  const viewportHeight = readViewportHeight();
+  if (viewportHeight <= 0) {
+    return DEFAULT_THREAD_TERMINAL_HEIGHT;
+  }
+  const preferredMaxHeight = Math.floor(viewportHeight * MAX_DRAWER_HEIGHT_RATIO);
+  return Math.max(Math.min(MIN_DRAWER_HEIGHT, viewportHeight), preferredMaxHeight);
 }
 
 function clampDrawerHeight(height: number): number {
@@ -43,6 +81,30 @@ function clampDrawerHeight(height: number): number {
 
 function writeSystemMessage(terminal: Terminal, message: string): void {
   terminal.write(`\r\n[terminal] ${message}\r\n`);
+}
+
+function reportTerminalOpenFailure(input: {
+  readonly error: unknown;
+  readonly threadId: ThreadId;
+  readonly targetId: ExecutionTargetId;
+  readonly terminalId: string;
+  readonly cwd: string;
+}): string {
+  const description =
+    input.error instanceof Error ? input.error.message : "Failed to open terminal";
+  console.error("Failed to open terminal", {
+    threadId: input.threadId,
+    targetId: input.targetId,
+    terminalId: input.terminalId,
+    cwd: input.cwd,
+    error: description,
+  });
+  toastManager.add({
+    type: "error",
+    title: "Unable to open terminal",
+    description,
+  });
+  return description;
 }
 
 function terminalThemeFromApp(): ITheme {
@@ -109,6 +171,7 @@ function terminalThemeFromApp(): ITheme {
 
 interface TerminalViewportProps {
   threadId: ThreadId;
+  targetId: ExecutionTargetId;
   terminalId: string;
   cwd: string;
   runtimeEnv?: Record<string, string>;
@@ -121,6 +184,7 @@ interface TerminalViewportProps {
 
 function TerminalViewport({
   threadId,
+  targetId,
   terminalId,
   cwd,
   runtimeEnv,
@@ -130,11 +194,13 @@ function TerminalViewport({
   resizeEpoch,
   drawerHeight,
 }: TerminalViewportProps) {
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const onSessionExitedRef = useRef(onSessionExited);
   const hasHandledExitRef = useRef(false);
+  const sessionReadyRef = useRef(false);
 
   useEffect(() => {
     onSessionExitedRef.current = onSessionExited;
@@ -142,20 +208,40 @@ function TerminalViewport({
 
   useEffect(() => {
     const mount = containerRef.current;
-    if (!mount) return;
+    const scrollContainer = scrollContainerRef.current;
+    if (!mount || !scrollContainer) return;
 
     let disposed = false;
+    sessionReadyRef.current = false;
 
     const fitAddon = new FitAddon();
+    const initialTerminalFontSizePx = currentTerminalFontSizePx();
+    const applyPreferredTerminalWidth = (activeTerminal?: Terminal | null) => {
+      const nextScrollContainer = scrollContainerRef.current;
+      const nextMount = containerRef.current;
+      if (!nextScrollContainer || !nextMount) {
+        return;
+      }
+      if (!shouldUseWideMobileTerminalLayout()) {
+        nextMount.style.width = "100%";
+        nextMount.style.minWidth = "0px";
+        return;
+      }
+      const fontSizePx = Number(activeTerminal?.options.fontSize ?? initialTerminalFontSizePx);
+      const minimumWidth = minimumTerminalWidthPx(fontSizePx);
+      nextMount.style.width = `${Math.max(nextScrollContainer.clientWidth, minimumWidth)}px`;
+      nextMount.style.minWidth = `${minimumWidth}px`;
+    };
     const terminal = new Terminal({
       cursorBlink: true,
-      lineHeight: 1.2,
-      fontSize: 12,
+      lineHeight: TERMINAL_LINE_HEIGHT,
+      fontSize: initialTerminalFontSizePx,
       scrollback: 5_000,
       fontFamily: '"SF Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace',
       theme: terminalThemeFromApp(),
     });
     terminal.loadAddon(fitAddon);
+    applyPreferredTerminalWidth(terminal);
     terminal.open(mount);
     fitAddon.fit();
 
@@ -169,10 +255,14 @@ function TerminalViewport({
       const activeTerminal = terminalRef.current;
       if (!activeTerminal) return;
       try {
-        await api.terminal.write({ threadId, terminalId, data });
+        await api.terminal.write({ threadId, targetId, terminalId, data });
       } catch (error) {
         writeSystemMessage(activeTerminal, error instanceof Error ? error.message : fallbackError);
       }
+    };
+    const triggerAutocomplete = () => {
+      void sendTerminalInput("\u001b[C", "Failed to move cursor right");
+      terminal.focus();
     };
 
     terminal.attachCustomKeyEventHandler((event) => {
@@ -190,6 +280,144 @@ function TerminalViewport({
       void sendTerminalInput("\u000c", "Failed to clear terminal");
       return false;
     });
+
+    const fallbackLineHeightPx = () =>
+      Number(terminalRef.current?.options.fontSize ?? initialTerminalFontSizePx) *
+      TERMINAL_LINE_HEIGHT;
+    const touchState = {
+      active: false,
+      lastClientY: 0,
+      startClientX: 0,
+      startClientY: 0,
+      moved: false,
+      pixelRemainder: 0,
+    };
+    const touchTarget =
+      mount.querySelector<HTMLElement>(".xterm-screen") ??
+      mount.querySelector<HTMLElement>(".xterm-viewport") ??
+      mount;
+    const pointerTapState = {
+      pointerId: -1,
+      moved: false,
+      startClientX: 0,
+      startClientY: 0,
+      lastTouchUpAt: 0,
+    };
+    const onTouchStart = (event: TouchEvent) => {
+      if (event.touches.length !== 1) {
+        touchState.active = false;
+        touchState.pixelRemainder = 0;
+        return;
+      }
+      touchState.active = true;
+      touchState.startClientX = event.touches[0]!.clientX;
+      touchState.startClientY = event.touches[0]!.clientY;
+      touchState.lastClientY = event.touches[0]!.clientY;
+      touchState.moved = false;
+      touchState.pixelRemainder = 0;
+    };
+    const onTouchMove = (event: TouchEvent) => {
+      if (!touchState.active || event.touches.length !== 1) {
+        return;
+      }
+
+      const nextClientY = event.touches[0]!.clientY;
+      const nextClientX = event.touches[0]!.clientX;
+      const pixelDelta = touchState.lastClientY - nextClientY;
+      touchState.lastClientY = nextClientY;
+      if (
+        Math.abs(nextClientX - touchState.startClientX) > 10 ||
+        Math.abs(nextClientY - touchState.startClientY) > 10
+      ) {
+        touchState.moved = true;
+      }
+
+      if (Math.abs(pixelDelta) < 0.5) {
+        return;
+      }
+
+      touchState.pixelRemainder += pixelDelta;
+      const lineDelta = Math.trunc(touchState.pixelRemainder / fallbackLineHeightPx());
+      if (lineDelta === 0) {
+        return;
+      }
+
+      touchState.pixelRemainder -= lineDelta * fallbackLineHeightPx();
+      event.preventDefault();
+      terminal.scrollLines(lineDelta);
+    };
+    const onTouchEnd = () => {
+      resetTouchState();
+    };
+    const resetTouchState = () => {
+      touchState.active = false;
+      touchState.moved = false;
+      touchState.pixelRemainder = 0;
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.pointerType !== "touch" || !event.isPrimary) {
+        return;
+      }
+      pointerTapState.pointerId = event.pointerId;
+      pointerTapState.moved = false;
+      pointerTapState.startClientX = event.clientX;
+      pointerTapState.startClientY = event.clientY;
+    };
+    const onPointerMove = (event: PointerEvent) => {
+      if (event.pointerType !== "touch" || event.pointerId !== pointerTapState.pointerId) {
+        return;
+      }
+      if (
+        Math.abs(event.clientX - pointerTapState.startClientX) > 10 ||
+        Math.abs(event.clientY - pointerTapState.startClientY) > 10
+      ) {
+        pointerTapState.moved = true;
+      }
+    };
+    const onPointerUp = (event: PointerEvent) => {
+      if (event.pointerType !== "touch" || event.pointerId !== pointerTapState.pointerId) {
+        return;
+      }
+
+      const completedTap = !pointerTapState.moved;
+      pointerTapState.pointerId = -1;
+      pointerTapState.moved = false;
+      if (!completedTap) {
+        return;
+      }
+
+      const now = Date.now();
+      if (now - pointerTapState.lastTouchUpAt <= 320) {
+        pointerTapState.lastTouchUpAt = 0;
+        triggerAutocomplete();
+        return;
+      }
+
+      pointerTapState.lastTouchUpAt = now;
+    };
+    const onPointerCancel = (event: PointerEvent) => {
+      if (event.pointerType !== "touch" || event.pointerId !== pointerTapState.pointerId) {
+        return;
+      }
+      pointerTapState.pointerId = -1;
+      pointerTapState.moved = false;
+    };
+    const onDoubleClick = (event: MouseEvent) => {
+      if (event.button !== 0) {
+        return;
+      }
+      event.preventDefault();
+      triggerAutocomplete();
+    };
+    touchTarget.addEventListener("touchstart", onTouchStart, { passive: true });
+    touchTarget.addEventListener("touchmove", onTouchMove, { passive: false });
+    touchTarget.addEventListener("touchend", onTouchEnd, { passive: true });
+    touchTarget.addEventListener("touchcancel", resetTouchState, { passive: true });
+    mount.addEventListener("pointerdown", onPointerDown, { passive: true });
+    mount.addEventListener("pointermove", onPointerMove, { passive: true });
+    mount.addEventListener("pointerup", onPointerUp, { passive: true });
+    mount.addEventListener("pointercancel", onPointerCancel, { passive: true });
+    mount.addEventListener("dblclick", onDoubleClick);
 
     const terminalLinksDisposable = terminal.registerLinkProvider({
       provideLinks: (bufferLineNumber, callback) => {
@@ -250,7 +478,7 @@ function TerminalViewport({
 
     const inputDisposable = terminal.onData((data) => {
       void api.terminal
-        .write({ threadId, terminalId, data })
+        .write({ threadId, targetId, terminalId, data })
         .catch((err) =>
           writeSystemMessage(
             terminal,
@@ -259,15 +487,34 @@ function TerminalViewport({
         );
     });
 
-    const themeObserver = new MutationObserver(() => {
+    const appearanceObserver = new MutationObserver(() => {
       const activeTerminal = terminalRef.current;
-      if (!activeTerminal) return;
+      const activeFitAddon = fitAddonRef.current;
+      const api = readNativeApi();
+      if (!activeTerminal || !activeFitAddon) return;
       activeTerminal.options.theme = terminalThemeFromApp();
+      const nextFontSize = currentTerminalFontSizePx();
+      if (activeTerminal.options.fontSize !== nextFontSize) {
+        activeTerminal.options.fontSize = nextFontSize;
+        applyPreferredTerminalWidth(activeTerminal);
+        activeFitAddon.fit();
+        if (sessionReadyRef.current && api) {
+          void api.terminal
+            .resize({
+              threadId,
+              targetId,
+              terminalId,
+              cols: activeTerminal.cols,
+              rows: activeTerminal.rows,
+            })
+            .catch(() => undefined);
+        }
+      }
       activeTerminal.refresh(0, activeTerminal.rows - 1);
     });
-    themeObserver.observe(document.documentElement, {
+    appearanceObserver.observe(document.documentElement, {
       attributes: true,
-      attributeFilter: ["class", "style"],
+      attributeFilter: ["class", "data-ui-scale", "style"],
     });
 
     const openTerminal = async () => {
@@ -278,6 +525,7 @@ function TerminalViewport({
         activeFitAddon.fit();
         const snapshot = await api.terminal.open({
           threadId,
+          targetId,
           terminalId,
           cwd,
           cols: activeTerminal.cols,
@@ -289,6 +537,7 @@ function TerminalViewport({
         if (snapshot.history.length > 0) {
           activeTerminal.write(snapshot.history);
         }
+        sessionReadyRef.current = true;
         if (autoFocus) {
           window.requestAnimationFrame(() => {
             activeTerminal.focus();
@@ -296,10 +545,14 @@ function TerminalViewport({
         }
       } catch (err) {
         if (disposed) return;
-        writeSystemMessage(
-          terminal,
-          err instanceof Error ? err.message : "Failed to open terminal",
-        );
+        const message = reportTerminalOpenFailure({
+          error: err,
+          threadId,
+          targetId,
+          terminalId,
+          cwd,
+        });
+        writeSystemMessage(terminal, message);
       }
     };
 
@@ -315,6 +568,7 @@ function TerminalViewport({
 
       if (event.type === "started" || event.type === "restarted") {
         hasHandledExitRef.current = false;
+        sessionReadyRef.current = true;
         activeTerminal.write("\u001bc");
         if (event.snapshot.history.length > 0) {
           activeTerminal.write(event.snapshot.history);
@@ -329,11 +583,13 @@ function TerminalViewport({
       }
 
       if (event.type === "error") {
+        sessionReadyRef.current = false;
         writeSystemMessage(activeTerminal, event.message);
         return;
       }
 
       if (event.type === "exited") {
+        sessionReadyRef.current = false;
         const details = [
           typeof event.exitCode === "number" ? `code ${event.exitCode}` : null,
           typeof event.exitSignal === "number" ? `signal ${event.exitSignal}` : null,
@@ -363,28 +619,71 @@ function TerminalViewport({
       if (!activeTerminal || !activeFitAddon) return;
       const wasAtBottom =
         activeTerminal.buffer.active.viewportY >= activeTerminal.buffer.active.baseY;
+      applyPreferredTerminalWidth(activeTerminal);
       activeFitAddon.fit();
       if (wasAtBottom) {
         activeTerminal.scrollToBottom();
       }
+      if (!sessionReadyRef.current) {
+        return;
+      }
       void api.terminal
         .resize({
           threadId,
+          targetId,
           terminalId,
           cols: activeTerminal.cols,
           rows: activeTerminal.rows,
         })
         .catch(() => undefined);
     }, 30);
+    const resizeObserver = new ResizeObserver(() => {
+      const activeTerminal = terminalRef.current;
+      const activeFitAddon = fitAddonRef.current;
+      if (!activeTerminal || !activeFitAddon) {
+        return;
+      }
+      const wasAtBottom =
+        activeTerminal.buffer.active.viewportY >= activeTerminal.buffer.active.baseY;
+      applyPreferredTerminalWidth(activeTerminal);
+      activeFitAddon.fit();
+      if (wasAtBottom) {
+        activeTerminal.scrollToBottom();
+      }
+      if (!sessionReadyRef.current) {
+        return;
+      }
+      void api.terminal
+        .resize({
+          threadId,
+          targetId,
+          terminalId,
+          cols: activeTerminal.cols,
+          rows: activeTerminal.rows,
+        })
+        .catch(() => undefined);
+    });
+    resizeObserver.observe(scrollContainer);
     void openTerminal();
 
     return () => {
       disposed = true;
+      sessionReadyRef.current = false;
       window.clearTimeout(fitTimer);
+      resizeObserver.disconnect();
       unsubscribe();
       inputDisposable.dispose();
       terminalLinksDisposable.dispose();
-      themeObserver.disconnect();
+      appearanceObserver.disconnect();
+      touchTarget.removeEventListener("touchstart", onTouchStart);
+      touchTarget.removeEventListener("touchmove", onTouchMove);
+      touchTarget.removeEventListener("touchend", onTouchEnd);
+      touchTarget.removeEventListener("touchcancel", resetTouchState);
+      mount.removeEventListener("pointerdown", onPointerDown);
+      mount.removeEventListener("pointermove", onPointerMove);
+      mount.removeEventListener("pointerup", onPointerUp);
+      mount.removeEventListener("pointercancel", onPointerCancel);
+      mount.removeEventListener("dblclick", onDoubleClick);
       terminalRef.current = null;
       fitAddonRef.current = null;
       terminal.dispose();
@@ -392,7 +691,7 @@ function TerminalViewport({
     // autoFocus is intentionally omitted;
     // it is only read at mount time and must not trigger terminal teardown/recreation.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cwd, runtimeEnv, terminalId, threadId]);
+  }, [cwd, runtimeEnv, targetId, terminalId, threadId]);
 
   useEffect(() => {
     if (!autoFocus) return;
@@ -413,13 +712,30 @@ function TerminalViewport({
     if (!api || !terminal || !fitAddon) return;
     const wasAtBottom = terminal.buffer.active.viewportY >= terminal.buffer.active.baseY;
     const frame = window.requestAnimationFrame(() => {
+      const scrollContainer = scrollContainerRef.current;
+      const mount = containerRef.current;
+      if (scrollContainer && mount) {
+        if (shouldUseWideMobileTerminalLayout()) {
+          const fontSizePx = Number(terminal.options.fontSize ?? currentTerminalFontSizePx());
+          const minimumWidth = minimumTerminalWidthPx(fontSizePx);
+          mount.style.width = `${Math.max(scrollContainer.clientWidth, minimumWidth)}px`;
+          mount.style.minWidth = `${minimumWidth}px`;
+        } else {
+          mount.style.width = "100%";
+          mount.style.minWidth = "0px";
+        }
+      }
       fitAddon.fit();
       if (wasAtBottom) {
         terminal.scrollToBottom();
       }
+      if (!sessionReadyRef.current) {
+        return;
+      }
       void api.terminal
         .resize({
           threadId,
+          targetId,
           terminalId,
           cols: terminal.cols,
           rows: terminal.rows,
@@ -429,12 +745,20 @@ function TerminalViewport({
     return () => {
       window.cancelAnimationFrame(frame);
     };
-  }, [drawerHeight, resizeEpoch, terminalId, threadId]);
-  return <div ref={containerRef} className="h-full w-full overflow-hidden rounded-[4px]" />;
+  }, [drawerHeight, resizeEpoch, targetId, terminalId, threadId]);
+  return (
+    <div
+      ref={scrollContainerRef}
+      className="terminal-scroll-shell h-full w-full overflow-x-auto overflow-y-hidden rounded-[4px]"
+    >
+      <div ref={containerRef} className="h-full overflow-hidden rounded-[4px]" />
+    </div>
+  );
 }
 
 interface ThreadTerminalDrawerProps {
   threadId: ThreadId;
+  targetId: ExecutionTargetId;
   cwd: string;
   runtimeEnv?: Record<string, string>;
   height: number;
@@ -484,6 +808,7 @@ function TerminalActionButton({ label, className, onClick, children }: TerminalA
 
 export default function ThreadTerminalDrawer({
   threadId,
+  targetId = LOCAL_EXECUTION_TARGET_ID,
   cwd,
   runtimeEnv,
   height,
@@ -501,8 +826,10 @@ export default function ThreadTerminalDrawer({
   onCloseTerminal,
   onHeightChange,
 }: ThreadTerminalDrawerProps) {
+  const drawerRef = useRef<HTMLElement>(null);
   const [drawerHeight, setDrawerHeight] = useState(() => clampDrawerHeight(height));
   const [resizeEpoch, setResizeEpoch] = useState(0);
+  const [fullscreenOpen, setFullscreenOpen] = useState(false);
   const drawerHeightRef = useRef(drawerHeight);
   const lastSyncedHeightRef = useRef(clampDrawerHeight(height));
   const onHeightChangeRef = useRef(onHeightChange);
@@ -631,6 +958,20 @@ export default function ThreadTerminalDrawer({
   const onNewTerminalAction = useCallback(() => {
     onNewTerminal();
   }, [onNewTerminal]);
+  const fullscreenActionLabel = fullscreenOpen ? "Exit Fullscreen" : "Fullscreen";
+  const onToggleFullscreen = useCallback(() => {
+    const drawer = drawerRef.current;
+    if (!drawer) {
+      return;
+    }
+
+    if (document.fullscreenElement === drawer) {
+      void document.exitFullscreen().catch(() => undefined);
+      return;
+    }
+
+    void drawer.requestFullscreen().catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     onHeightChangeRef.current = onHeightChange;
@@ -699,7 +1040,7 @@ export default function ThreadTerminalDrawer({
   );
 
   useEffect(() => {
-    const onWindowResize = () => {
+    const onViewportResize = () => {
       const clampedHeight = clampDrawerHeight(drawerHeightRef.current);
       const changed = clampedHeight !== drawerHeightRef.current;
       if (changed) {
@@ -711,10 +1052,8 @@ export default function ThreadTerminalDrawer({
       }
       setResizeEpoch((value) => value + 1);
     };
-    window.addEventListener("resize", onWindowResize);
-    return () => {
-      window.removeEventListener("resize", onWindowResize);
-    };
+
+    return subscribeToViewportChanges(onViewportResize);
   }, [syncHeight]);
 
   useEffect(() => {
@@ -723,8 +1062,21 @@ export default function ThreadTerminalDrawer({
     };
   }, [syncHeight]);
 
+  useEffect(() => {
+    const syncFullscreenState = () => {
+      setFullscreenOpen(document.fullscreenElement === drawerRef.current);
+    };
+
+    document.addEventListener("fullscreenchange", syncFullscreenState);
+    syncFullscreenState();
+    return () => {
+      document.removeEventListener("fullscreenchange", syncFullscreenState);
+    };
+  }, []);
+
   return (
     <aside
+      ref={drawerRef}
       className="thread-terminal-drawer relative flex min-w-0 shrink-0 flex-col overflow-hidden border-t border-border/80 bg-background"
       style={{ height: `${drawerHeight}px` }}
     >
@@ -757,6 +1109,18 @@ export default function ThreadTerminalDrawer({
               label={newTerminalActionLabel}
             >
               <Plus className="size-3.25" />
+            </TerminalActionButton>
+            <div className="h-4 w-px bg-border/80" />
+            <TerminalActionButton
+              className="p-1 text-foreground/90 transition-colors hover:bg-accent"
+              onClick={onToggleFullscreen}
+              label={fullscreenActionLabel}
+            >
+              {fullscreenOpen ? (
+                <Minimize2 className="size-3.25" />
+              ) : (
+                <Maximize2 className="size-3.25" />
+              )}
             </TerminalActionButton>
             <div className="h-4 w-px bg-border/80" />
             <TerminalActionButton
@@ -795,6 +1159,7 @@ export default function ThreadTerminalDrawer({
                     <div className="h-full p-1">
                       <TerminalViewport
                         threadId={threadId}
+                        targetId={targetId}
                         terminalId={terminalId}
                         cwd={cwd}
                         {...(runtimeEnv ? { runtimeEnv } : {})}
@@ -813,6 +1178,7 @@ export default function ThreadTerminalDrawer({
                 <TerminalViewport
                   key={resolvedActiveTerminalId}
                   threadId={threadId}
+                  targetId={targetId}
                   terminalId={resolvedActiveTerminalId}
                   cwd={cwd}
                   {...(runtimeEnv ? { runtimeEnv } : {})}
@@ -847,6 +1213,17 @@ export default function ThreadTerminalDrawer({
                     label={newTerminalActionLabel}
                   >
                     <Plus className="size-3.25" />
+                  </TerminalActionButton>
+                  <TerminalActionButton
+                    className="inline-flex h-full items-center border-l border-border/70 px-1 text-foreground/90 transition-colors hover:bg-accent/70"
+                    onClick={onToggleFullscreen}
+                    label={fullscreenActionLabel}
+                  >
+                    {fullscreenOpen ? (
+                      <Minimize2 className="size-3.25" />
+                    ) : (
+                      <Maximize2 className="size-3.25" />
+                    )}
                   </TerminalActionButton>
                   <TerminalActionButton
                     className="inline-flex h-full items-center border-l border-border/70 px-1 text-foreground/90 transition-colors hover:bg-accent/70"

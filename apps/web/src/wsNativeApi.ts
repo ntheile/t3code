@@ -111,7 +111,15 @@ export function createWsNativeApi(): NativeApi {
       onEvent: (callback) =>
         transport.subscribe(WS_CHANNELS.terminalEvent, (message) => callback(message.data)),
     },
+    portForward: {
+      open: (input) => transport.request(WS_METHODS.portForwardOpen, input),
+      list: (input = {}) => transport.request(WS_METHODS.portForwardList, input),
+      close: (input) => transport.request(WS_METHODS.portForwardClose, input),
+      onEvent: (callback) =>
+        transport.subscribe(WS_CHANNELS.portForwardEvent, (message) => callback(message.data)),
+    },
     projects: {
+      listDirectory: (input) => transport.request(WS_METHODS.projectsListDirectory, input),
       searchEntries: (input) => transport.request(WS_METHODS.projectsSearchEntries, input),
       writeFile: (input) => transport.request(WS_METHODS.projectsWriteFile, input),
     },
@@ -135,6 +143,7 @@ export function createWsNativeApi(): NativeApi {
     git: {
       pull: (input) => transport.request(WS_METHODS.gitPull, input),
       status: (input) => transport.request(WS_METHODS.gitStatus, input),
+      workingTreeDiff: (input) => transport.request(WS_METHODS.gitWorkingTreeDiff, input),
       runStackedAction: (input) => transport.request(WS_METHODS.gitRunStackedAction, input),
       listBranches: (input) => transport.request(WS_METHODS.gitListBranches, input),
       createWorktree: (input) => transport.request(WS_METHODS.gitCreateWorktree, input),
@@ -160,6 +169,11 @@ export function createWsNativeApi(): NativeApi {
     server: {
       getConfig: () => transport.request(WS_METHODS.serverGetConfig),
       upsertKeybinding: (input) => transport.request(WS_METHODS.serverUpsertKeybinding, input),
+      listExecutionTargets: () => transport.request(WS_METHODS.executionTargetList, {}),
+      upsertExecutionTarget: (input) => transport.request(WS_METHODS.executionTargetUpsert, input),
+      removeExecutionTarget: (input) => transport.request(WS_METHODS.executionTargetRemove, input),
+      checkExecutionTargetHealth: (input) =>
+        transport.request(WS_METHODS.executionTargetCheckHealth, input),
     },
     orchestration: {
       getSnapshot: () => transport.request(ORCHESTRATION_WS_METHODS.getSnapshot),

@@ -23,6 +23,7 @@ import {
   GitRemoveWorktreeInput,
   GitRunStackedActionInput,
   GitStatusInput,
+  GitWorkingTreeDiffInput,
 } from "./git";
 import {
   TerminalClearInput,
@@ -34,9 +35,24 @@ import {
   TerminalWriteInput,
 } from "./terminal";
 import { KeybindingRule } from "./keybindings";
-import { ProjectSearchEntriesInput, ProjectWriteFileInput } from "./project";
+import {
+  ProjectListDirectoryInput,
+  ProjectSearchEntriesInput,
+  ProjectWriteFileInput,
+} from "./project";
 import { OpenInEditorInput } from "./editor";
 import { ServerConfigUpdatedPayload } from "./server";
+import {
+  ExecutionTargetCheckHealthInput,
+  ExecutionTargetRemoveInput,
+  ExecutionTargetUpsertInput,
+} from "./executionTarget";
+import {
+  PortForwardCloseInput,
+  PortForwardEvent,
+  PortForwardListInput,
+  PortForwardOpenInput,
+} from "./portForward";
 
 // ── WebSocket RPC Method Names ───────────────────────────────────────
 
@@ -45,6 +61,7 @@ export const WS_METHODS = {
   projectsList: "projects.list",
   projectsAdd: "projects.add",
   projectsRemove: "projects.remove",
+  projectsListDirectory: "projects.listDirectory",
   projectsSearchEntries: "projects.searchEntries",
   projectsWriteFile: "projects.writeFile",
 
@@ -54,6 +71,7 @@ export const WS_METHODS = {
   // Git methods
   gitPull: "git.pull",
   gitStatus: "git.status",
+  gitWorkingTreeDiff: "git.workingTreeDiff",
   gitRunStackedAction: "git.runStackedAction",
   gitListBranches: "git.listBranches",
   gitCreateWorktree: "git.createWorktree",
@@ -71,16 +89,24 @@ export const WS_METHODS = {
   terminalClear: "terminal.clear",
   terminalRestart: "terminal.restart",
   terminalClose: "terminal.close",
+  portForwardOpen: "portForward.open",
+  portForwardList: "portForward.list",
+  portForwardClose: "portForward.close",
 
   // Server meta
   serverGetConfig: "server.getConfig",
   serverUpsertKeybinding: "server.upsertKeybinding",
+  executionTargetList: "executionTarget.list",
+  executionTargetUpsert: "executionTarget.upsert",
+  executionTargetRemove: "executionTarget.remove",
+  executionTargetCheckHealth: "executionTarget.checkHealth",
 } as const;
 
 // ── Push Event Channels ──────────────────────────────────────────────
 
 export const WS_CHANNELS = {
   terminalEvent: "terminal.event",
+  portForwardEvent: "portForward.event",
   serverWelcome: "server.welcome",
   serverConfigUpdated: "server.configUpdated",
 } as const;
@@ -109,6 +135,7 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(ORCHESTRATION_WS_METHODS.replayEvents, OrchestrationReplayEventsInput),
 
   // Project Search
+  tagRequestBody(WS_METHODS.projectsListDirectory, ProjectListDirectoryInput),
   tagRequestBody(WS_METHODS.projectsSearchEntries, ProjectSearchEntriesInput),
   tagRequestBody(WS_METHODS.projectsWriteFile, ProjectWriteFileInput),
 
@@ -118,6 +145,7 @@ const WebSocketRequestBody = Schema.Union([
   // Git methods
   tagRequestBody(WS_METHODS.gitPull, GitPullInput),
   tagRequestBody(WS_METHODS.gitStatus, GitStatusInput),
+  tagRequestBody(WS_METHODS.gitWorkingTreeDiff, GitWorkingTreeDiffInput),
   tagRequestBody(WS_METHODS.gitRunStackedAction, GitRunStackedActionInput),
   tagRequestBody(WS_METHODS.gitListBranches, GitListBranchesInput),
   tagRequestBody(WS_METHODS.gitCreateWorktree, GitCreateWorktreeInput),
@@ -135,10 +163,17 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.terminalClear, TerminalClearInput),
   tagRequestBody(WS_METHODS.terminalRestart, TerminalRestartInput),
   tagRequestBody(WS_METHODS.terminalClose, TerminalCloseInput),
+  tagRequestBody(WS_METHODS.portForwardOpen, PortForwardOpenInput),
+  tagRequestBody(WS_METHODS.portForwardList, PortForwardListInput),
+  tagRequestBody(WS_METHODS.portForwardClose, PortForwardCloseInput),
 
   // Server meta
   tagRequestBody(WS_METHODS.serverGetConfig, Schema.Struct({})),
   tagRequestBody(WS_METHODS.serverUpsertKeybinding, KeybindingRule),
+  tagRequestBody(WS_METHODS.executionTargetList, Schema.Struct({})),
+  tagRequestBody(WS_METHODS.executionTargetUpsert, ExecutionTargetUpsertInput),
+  tagRequestBody(WS_METHODS.executionTargetRemove, ExecutionTargetRemoveInput),
+  tagRequestBody(WS_METHODS.executionTargetCheckHealth, ExecutionTargetCheckHealthInput),
 ]);
 
 export const WebSocketRequest = Schema.Struct({
@@ -173,6 +208,7 @@ export interface WsPushPayloadByChannel {
   readonly [WS_CHANNELS.serverWelcome]: WsWelcomePayload;
   readonly [WS_CHANNELS.serverConfigUpdated]: typeof ServerConfigUpdatedPayload.Type;
   readonly [WS_CHANNELS.terminalEvent]: typeof TerminalEvent.Type;
+  readonly [WS_CHANNELS.portForwardEvent]: typeof PortForwardEvent.Type;
   readonly [ORCHESTRATION_WS_CHANNELS.domainEvent]: OrchestrationEvent;
 }
 
@@ -196,6 +232,10 @@ export const WsPushServerConfigUpdated = makeWsPushSchema(
   ServerConfigUpdatedPayload,
 );
 export const WsPushTerminalEvent = makeWsPushSchema(WS_CHANNELS.terminalEvent, TerminalEvent);
+export const WsPushPortForwardEvent = makeWsPushSchema(
+  WS_CHANNELS.portForwardEvent,
+  PortForwardEvent,
+);
 export const WsPushOrchestrationDomainEvent = makeWsPushSchema(
   ORCHESTRATION_WS_CHANNELS.domainEvent,
   OrchestrationEvent,
@@ -205,6 +245,7 @@ export const WsPushChannelSchema = Schema.Literals([
   WS_CHANNELS.serverWelcome,
   WS_CHANNELS.serverConfigUpdated,
   WS_CHANNELS.terminalEvent,
+  WS_CHANNELS.portForwardEvent,
   ORCHESTRATION_WS_CHANNELS.domainEvent,
 ]);
 export type WsPushChannelSchema = typeof WsPushChannelSchema.Type;
@@ -213,6 +254,7 @@ export const WsPush = Schema.Union([
   WsPushServerWelcome,
   WsPushServerConfigUpdated,
   WsPushTerminalEvent,
+  WsPushPortForwardEvent,
   WsPushOrchestrationDomainEvent,
 ]);
 export type WsPush = typeof WsPush.Type;

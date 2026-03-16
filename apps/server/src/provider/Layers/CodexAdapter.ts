@@ -11,6 +11,7 @@ import {
   type CanonicalRequestType,
   type ProviderEvent,
   type ProviderRuntimeEvent,
+  type ProviderSessionStartInput,
   type ProviderUserInputAnswers,
   RuntimeItemId,
   RuntimeRequestId,
@@ -38,6 +39,7 @@ import {
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
+import { ExecutionTargetRuntime } from "../../executionTarget/Services/ExecutionTargetRuntime.ts";
 
 const PROVIDER = "codex" as const;
 
@@ -88,6 +90,26 @@ function toRequestError(threadId: ThreadId, method: string, cause: unknown): Pro
     detail: toMessage(cause, `${method} failed`),
     cause,
   });
+}
+
+function toManagerStartSessionInput(
+  runtimeInput: ProviderSessionStartInput,
+  launch?: CodexAppServerStartSessionInput["launch"],
+): CodexAppServerStartSessionInput {
+  return {
+    threadId: runtimeInput.threadId,
+    provider: "codex",
+    targetId: runtimeInput.targetId,
+    ...(runtimeInput.cwd !== undefined ? { cwd: runtimeInput.cwd } : {}),
+    ...(runtimeInput.resumeCursor !== undefined ? { resumeCursor: runtimeInput.resumeCursor } : {}),
+    ...(runtimeInput.providerOptions !== undefined
+      ? { providerOptions: runtimeInput.providerOptions }
+      : {}),
+    runtimeMode: runtimeInput.runtimeMode,
+    ...(runtimeInput.model !== undefined ? { model: runtimeInput.model } : {}),
+    ...(runtimeInput.modelOptions?.codex?.fastMode ? { serviceTier: "fast" } : {}),
+    ...(launch ? { launch } : {}),
+  };
 }
 
 function asObject(value: unknown): Record<string, unknown> | undefined {
@@ -1261,6 +1283,7 @@ const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
     const serverConfig = yield* Effect.service(ServerConfig);
+    const executionTargetRuntime = yield* ExecutionTargetRuntime;
     const nativeEventLogger =
       options?.nativeEventLogger ??
       (options?.nativeEventLogPath !== undefined
@@ -1298,27 +1321,24 @@ const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
         );
       }
 
-      const managerInput: CodexAppServerStartSessionInput = {
-        threadId: input.threadId,
-        provider: "codex",
-        ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
-        ...(input.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
-        ...(input.providerOptions !== undefined ? { providerOptions: input.providerOptions } : {}),
-        runtimeMode: input.runtimeMode,
-        ...(input.model !== undefined ? { model: input.model } : {}),
-        ...(input.modelOptions?.codex?.fastMode ? { serviceTier: "fast" } : {}),
-      };
-
-      return Effect.tryPromise({
-        try: () => manager.startSession(managerInput),
-        catch: (cause) =>
-          new ProviderAdapterProcessError({
-            provider: PROVIDER,
-            threadId: input.threadId,
-            detail: toMessage(cause, "Failed to start Codex adapter session."),
-            cause,
-          }),
-      }).pipe(Effect.map((session) => session));
+      return executionTargetRuntime
+        .startProviderSession(input, {
+          startLocal: (runtimeInput) =>
+            manager.startSession(toManagerStartSessionInput(runtimeInput)),
+          startSsh: (runtimeInput, ssh) =>
+            manager.startSession(toManagerStartSessionInput(runtimeInput, ssh)),
+        })
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new ProviderAdapterProcessError({
+                provider: PROVIDER,
+                threadId: input.threadId,
+                detail: cause.message,
+                cause,
+              }),
+          ),
+        );
     };
 
     const sendTurn: CodexAdapterShape["sendTurn"] = (input) =>

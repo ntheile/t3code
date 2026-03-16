@@ -7,6 +7,7 @@
  * @module TerminalManager
  */
 import {
+  type ExecutionTargetId,
   TerminalClearInput,
   TerminalCloseInput,
   TerminalEvent,
@@ -27,6 +28,7 @@ export class TerminalError extends Schema.TaggedErrorClass<TerminalError>()("Ter
 
 export interface TerminalSessionState {
   threadId: string;
+  targetId: ExecutionTargetId;
   terminalId: string;
   cwd: string;
   status: TerminalSessionStatus;
@@ -41,6 +43,7 @@ export interface TerminalSessionState {
   unsubscribeData: (() => void) | null;
   unsubscribeExit: (() => void) | null;
   hasRunningSubprocess: boolean;
+  supportsSubprocessPolling: boolean;
   runtimeEnv: Record<string, string> | null;
 }
 
@@ -48,6 +51,16 @@ export interface ShellCandidate {
   shell: string;
   args?: string[];
 }
+
+export type TerminalLaunchSpec =
+  | { readonly kind: "local" }
+  | {
+      readonly kind: "ssh";
+      readonly host: string;
+      readonly port?: number;
+      readonly user?: string;
+      readonly password?: string;
+    };
 
 export interface TerminalStartInput extends TerminalOpenInput {
   cols: number;

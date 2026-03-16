@@ -1,5 +1,7 @@
 export * from "./baseSchemas";
+export * from "./executionTarget";
 export * from "./ipc";
+export * from "./portForward";
 export * from "./terminal";
 export * from "./provider";
 export * from "./providerRuntime";

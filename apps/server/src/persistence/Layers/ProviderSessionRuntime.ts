@@ -46,6 +46,7 @@ const makeProviderSessionRuntimeRepository = Effect.gen(function* () {
         INSERT INTO provider_session_runtime (
           thread_id,
           provider_name,
+          target_id,
           adapter_key,
           runtime_mode,
           status,
@@ -56,6 +57,7 @@ const makeProviderSessionRuntimeRepository = Effect.gen(function* () {
         VALUES (
           ${runtime.threadId},
           ${runtime.providerName},
+          ${runtime.targetId},
           ${runtime.adapterKey},
           ${runtime.runtimeMode},
           ${runtime.status},
@@ -66,6 +68,7 @@ const makeProviderSessionRuntimeRepository = Effect.gen(function* () {
         ON CONFLICT (thread_id)
         DO UPDATE SET
           provider_name = excluded.provider_name,
+          target_id = excluded.target_id,
           adapter_key = excluded.adapter_key,
           runtime_mode = excluded.runtime_mode,
           status = excluded.status,
@@ -83,6 +86,7 @@ const makeProviderSessionRuntimeRepository = Effect.gen(function* () {
         SELECT
           thread_id AS "threadId",
           provider_name AS "providerName",
+          target_id AS "targetId",
           adapter_key AS "adapterKey",
           runtime_mode AS "runtimeMode",
           status,
@@ -102,6 +106,7 @@ const makeProviderSessionRuntimeRepository = Effect.gen(function* () {
         SELECT
           thread_id AS "threadId",
           provider_name AS "providerName",
+          target_id AS "targetId",
           adapter_key AS "adapterKey",
           runtime_mode AS "runtimeMode",
           status,

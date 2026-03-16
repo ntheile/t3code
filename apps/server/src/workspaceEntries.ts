@@ -4,7 +4,9 @@ import path from "node:path";
 import { runProcess } from "./processRunner";
 
 import {
+  ProjectDirectoryEntry,
   ProjectEntry,
+  ProjectListDirectoryResult,
   ProjectSearchEntriesInput,
   ProjectSearchEntriesResult,
 } from "@t3tools/contracts";
@@ -539,16 +541,67 @@ export function clearWorkspaceIndexCache(cwd: string): void {
   inFlightWorkspaceIndexBuilds.delete(cwd);
 }
 
-export async function searchWorkspaceEntries(
-  input: ProjectSearchEntriesInput,
-): Promise<ProjectSearchEntriesResult> {
-  const index = await getWorkspaceIndex(input.cwd);
+export function buildWorkspaceEntriesFromFilePaths(relativeFilePaths: string[]): ProjectEntry[] {
+  const directorySet = new Set<string>();
+  for (const filePath of relativeFilePaths) {
+    for (const directoryPath of directoryAncestorsOf(filePath)) {
+      if (!isPathInIgnoredDirectory(directoryPath)) {
+        directorySet.add(directoryPath);
+      }
+    }
+  }
+
+  const directoryEntries: ProjectEntry[] = [...directorySet]
+    .toSorted((left, right) => left.localeCompare(right))
+    .map((directoryPath) => ({
+      path: directoryPath,
+      kind: "directory",
+      parentPath: parentPathOf(directoryPath),
+    }));
+  const fileEntries: ProjectEntry[] = [...new Set(relativeFilePaths)]
+    .toSorted((left, right) => left.localeCompare(right))
+    .map((filePath) => ({
+      path: filePath,
+      kind: "file",
+      parentPath: parentPathOf(filePath),
+    }));
+
+  return [...directoryEntries, ...fileEntries];
+}
+
+export async function listWorkspaceDirectories(input: {
+  cwd: string;
+}): Promise<ProjectListDirectoryResult> {
+  const directoryEntries = await fs.readdir(input.cwd, { withFileTypes: true });
+  const entries: ProjectDirectoryEntry[] = directoryEntries
+    .filter((entry): entry is Dirent => entry.isDirectory())
+    .map((entry) => ({
+      name: entry.name,
+      path: path.join(input.cwd, entry.name),
+    }))
+    .toSorted((left, right) => left.name.localeCompare(right.name));
+
+  const parentCwd = path.dirname(input.cwd) !== input.cwd ? path.dirname(input.cwd) : undefined;
+
+  return {
+    cwd: input.cwd,
+    ...(parentCwd ? { parentCwd } : {}),
+    entries,
+  };
+}
+
+export function searchWorkspaceEntriesInIndex(input: {
+  entries: ProjectEntry[];
+  query: string;
+  limit: number;
+  truncated: boolean;
+}): ProjectSearchEntriesResult {
   const normalizedQuery = normalizeQuery(input.query);
   const limit = Math.max(0, Math.floor(input.limit));
   const rankedEntries: RankedWorkspaceEntry[] = [];
   let matchedEntryCount = 0;
 
-  for (const entry of index.entries) {
+  for (const entry of input.entries.map(toSearchableWorkspaceEntry)) {
     const score = scoreEntry(entry, normalizedQuery);
     if (score === null) {
       continue;
@@ -560,6 +613,18 @@ export async function searchWorkspaceEntries(
 
   return {
     entries: rankedEntries.map((candidate) => candidate.entry),
-    truncated: index.truncated || matchedEntryCount > limit,
+    truncated: input.truncated || matchedEntryCount > limit,
   };
+}
+
+export async function searchWorkspaceEntries(
+  input: ProjectSearchEntriesInput,
+): Promise<ProjectSearchEntriesResult> {
+  const index = await getWorkspaceIndex(input.cwd);
+  return searchWorkspaceEntriesInIndex({
+    entries: index.entries,
+    query: input.query,
+    limit: input.limit,
+    truncated: index.truncated,
+  });
 }

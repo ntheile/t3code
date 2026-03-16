@@ -1,6 +1,7 @@
 import { Fragment, type ReactNode, createElement, useEffect } from "react";
 import {
   DEFAULT_MODEL_BY_PROVIDER,
+  LOCAL_EXECUTION_TARGET_ID,
   type ProviderKind,
   ThreadId,
   type OrchestrationReadModel,
@@ -42,8 +43,16 @@ const initialState: AppState = {
   threads: [],
   threadsHydrated: false,
 };
-const persistedExpandedProjectCwds = new Set<string>();
-const persistedProjectOrderCwds: string[] = [];
+const persistedExpandedProjectKeys = new Set<string>();
+const persistedProjectOrderKeys: string[] = [];
+
+function projectStorageKey(input: { readonly cwd: string; readonly targetId: string }): string {
+  return `${input.targetId}\u0000${input.cwd}`;
+}
+
+function normalizePersistedProjectKey(raw: string): string {
+  return raw.includes("\u0000") ? raw : projectStorageKey({ cwd: raw, targetId: "local" });
+}
 
 // ── Persist helpers ──────────────────────────────────────────────────
 
@@ -56,16 +65,20 @@ function readPersistedState(): AppState {
       expandedProjectCwds?: string[];
       projectOrderCwds?: string[];
     };
-    persistedExpandedProjectCwds.clear();
-    persistedProjectOrderCwds.length = 0;
-    for (const cwd of parsed.expandedProjectCwds ?? []) {
-      if (typeof cwd === "string" && cwd.length > 0) {
-        persistedExpandedProjectCwds.add(cwd);
+    persistedExpandedProjectKeys.clear();
+    persistedProjectOrderKeys.length = 0;
+    for (const projectKey of parsed.expandedProjectCwds ?? []) {
+      if (typeof projectKey === "string" && projectKey.length > 0) {
+        persistedExpandedProjectKeys.add(normalizePersistedProjectKey(projectKey));
       }
     }
-    for (const cwd of parsed.projectOrderCwds ?? []) {
-      if (typeof cwd === "string" && cwd.length > 0 && !persistedProjectOrderCwds.includes(cwd)) {
-        persistedProjectOrderCwds.push(cwd);
+    for (const projectKey of parsed.projectOrderCwds ?? []) {
+      if (
+        typeof projectKey === "string" &&
+        projectKey.length > 0 &&
+        !persistedProjectOrderKeys.includes(normalizePersistedProjectKey(projectKey))
+      ) {
+        persistedProjectOrderKeys.push(normalizePersistedProjectKey(projectKey));
       }
     }
     return { ...initialState };
@@ -84,8 +97,8 @@ function persistState(state: AppState): void {
       JSON.stringify({
         expandedProjectCwds: state.projects
           .filter((project) => project.expanded)
-          .map((project) => project.cwd),
-        projectOrderCwds: state.projects.map((project) => project.cwd),
+          .map((project) => projectStorageKey(project)),
+        projectOrderCwds: state.projects.map((project) => projectStorageKey(project)),
       }),
     );
     if (!legacyKeysCleanedUp) {
@@ -122,29 +135,37 @@ function mapProjectsFromReadModel(
   previous: Project[],
 ): Project[] {
   const previousById = new Map(previous.map((project) => [project.id, project] as const));
-  const previousByCwd = new Map(previous.map((project) => [project.cwd, project] as const));
-  const previousOrderById = new Map(previous.map((project, index) => [project.id, index] as const));
-  const previousOrderByCwd = new Map(
-    previous.map((project, index) => [project.cwd, index] as const),
+  const previousByKey = new Map(
+    previous.map((project) => [projectStorageKey(project), project] as const),
   );
-  const persistedOrderByCwd = new Map(
-    persistedProjectOrderCwds.map((cwd, index) => [cwd, index] as const),
+  const previousOrderById = new Map(previous.map((project, index) => [project.id, index] as const));
+  const previousOrderByKey = new Map(
+    previous.map((project, index) => [projectStorageKey(project), index] as const),
+  );
+  const persistedOrderByKey = new Map(
+    persistedProjectOrderKeys.map((projectKey, index) => [projectKey, index] as const),
   );
   const usePersistedOrder = previous.length === 0;
 
   const mappedProjects = incoming.map((project) => {
-    const existing = previousById.get(project.id) ?? previousByCwd.get(project.workspaceRoot);
+    const targetId = project.targetId ?? LOCAL_EXECUTION_TARGET_ID;
+    const projectKey = projectStorageKey({
+      cwd: project.workspaceRoot,
+      targetId,
+    });
+    const existing = previousById.get(project.id) ?? previousByKey.get(projectKey);
     return {
       id: project.id,
       name: project.title,
       cwd: project.workspaceRoot,
+      targetId,
       model:
         existing?.model ??
         resolveModelSlug(project.defaultModel ?? DEFAULT_MODEL_BY_PROVIDER.codex),
       expanded:
         existing?.expanded ??
-        (persistedExpandedProjectCwds.size > 0
-          ? persistedExpandedProjectCwds.has(project.workspaceRoot)
+        (persistedExpandedProjectKeys.size > 0
+          ? persistedExpandedProjectKeys.has(projectKey)
           : true),
       scripts: project.scripts.map((script) => ({ ...script })),
     } satisfies Project;
@@ -153,12 +174,14 @@ function mapProjectsFromReadModel(
   return mappedProjects
     .map((project, incomingIndex) => {
       const previousIndex =
-        previousOrderById.get(project.id) ?? previousOrderByCwd.get(project.cwd);
-      const persistedIndex = usePersistedOrder ? persistedOrderByCwd.get(project.cwd) : undefined;
+        previousOrderById.get(project.id) ?? previousOrderByKey.get(projectStorageKey(project));
+      const persistedIndex = usePersistedOrder
+        ? persistedOrderByKey.get(projectStorageKey(project))
+        : undefined;
       const orderIndex =
         previousIndex ??
         persistedIndex ??
-        (usePersistedOrder ? persistedProjectOrderCwds.length : previous.length) + incomingIndex;
+        (usePersistedOrder ? persistedProjectOrderKeys.length : previous.length) + incomingIndex;
       return { project, incomingIndex, orderIndex };
     })
     .toSorted((a, b) => {
@@ -259,6 +282,7 @@ export function syncServerReadModel(state: AppState, readModel: OrchestrationRea
         id: thread.id,
         codexThreadId: null,
         projectId: thread.projectId,
+        targetId: thread.targetId ?? LOCAL_EXECUTION_TARGET_ID,
         title: thread.title,
         model: resolveModelSlugForProvider(
           inferProviderForThreadModel({
@@ -271,6 +295,7 @@ export function syncServerReadModel(state: AppState, readModel: OrchestrationRea
         interactionMode: thread.interactionMode,
         session: thread.session
           ? {
+              targetId: thread.session.targetId ?? thread.targetId ?? LOCAL_EXECUTION_TARGET_ID,
               provider: toLegacyProvider(thread.session.providerName),
               status: toLegacySessionStatus(thread.session.status),
               orchestrationStatus: thread.session.status,

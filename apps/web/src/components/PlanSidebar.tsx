@@ -1,3 +1,4 @@
+import { LOCAL_EXECUTION_TARGET_ID, type ExecutionTargetId } from "@t3tools/contracts";
 import { memo, useState, useCallback } from "react";
 import { type TimestampFormat } from "../appSettings";
 import { Badge } from "./ui/badge";
@@ -55,6 +56,7 @@ interface PlanSidebarProps {
   activeProposedPlan: LatestProposedPlanState | null;
   markdownCwd: string | undefined;
   workspaceRoot: string | undefined;
+  targetId?: ExecutionTargetId | null;
   timestampFormat: TimestampFormat;
   onClose: () => void;
 }
@@ -64,6 +66,7 @@ const PlanSidebar = memo(function PlanSidebar({
   activeProposedPlan,
   markdownCwd,
   workspaceRoot,
+  targetId = LOCAL_EXECUTION_TARGET_ID,
   timestampFormat,
   onClose,
 }: PlanSidebarProps) {
@@ -90,10 +93,12 @@ const PlanSidebar = memo(function PlanSidebar({
     const api = readNativeApi();
     if (!api || !workspaceRoot || !planMarkdown) return;
     const filename = buildProposedPlanMarkdownFilename(planMarkdown);
+    const resolvedTargetId = targetId ?? undefined;
     setIsSavingToWorkspace(true);
     void api.projects
       .writeFile({
         cwd: workspaceRoot,
+        ...(resolvedTargetId ? { targetId: resolvedTargetId } : {}),
         relativePath: filename,
         contents: normalizePlanMarkdownForExport(planMarkdown),
       })
@@ -115,7 +120,7 @@ const PlanSidebar = memo(function PlanSidebar({
         () => setIsSavingToWorkspace(false),
         () => setIsSavingToWorkspace(false),
       );
-  }, [planMarkdown, workspaceRoot]);
+  }, [planMarkdown, targetId, workspaceRoot]);
 
   return (
     <div className="flex h-full w-[340px] shrink-0 flex-col border-l border-border/70 bg-card/50">

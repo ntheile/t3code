@@ -2,6 +2,7 @@
 import "../index.css";
 
 import {
+  LOCAL_EXECUTION_TARGET_ID,
   ORCHESTRATION_WS_METHODS,
   type MessageId,
   type OrchestrationReadModel,
@@ -197,6 +198,7 @@ function createSnapshotForTargetUser(options: {
         id: PROJECT_ID,
         title: "Project",
         workspaceRoot: "/repo/project",
+        targetId: LOCAL_EXECUTION_TARGET_ID,
         defaultModel: "gpt-5",
         scripts: [],
         createdAt: NOW_ISO,
@@ -208,6 +210,7 @@ function createSnapshotForTargetUser(options: {
       {
         id: THREAD_ID,
         projectId: PROJECT_ID,
+        targetId: LOCAL_EXECUTION_TARGET_ID,
         title: "Browser test thread",
         model: "gpt-5",
         interactionMode: "default",
@@ -224,6 +227,7 @@ function createSnapshotForTargetUser(options: {
         checkpoints: [],
         session: {
           threadId: THREAD_ID,
+          targetId: LOCAL_EXECUTION_TARGET_ID,
           status: options.sessionStatus ?? "ready",
           providerName: "codex",
           runtimeMode: "full-access",
@@ -262,6 +266,7 @@ function addThreadToSnapshot(
       {
         id: threadId,
         projectId: PROJECT_ID,
+        targetId: LOCAL_EXECUTION_TARGET_ID,
         title: "New thread",
         model: "gpt-5",
         interactionMode: "default",
@@ -278,6 +283,7 @@ function addThreadToSnapshot(
         checkpoints: [],
         session: {
           threadId,
+          targetId: LOCAL_EXECUTION_TARGET_ID,
           status: "ready",
           providerName: "codex",
           runtimeMode: "full-access",
@@ -632,6 +638,7 @@ async function mountChatView(options: {
   viewport: ViewportSpec;
   snapshot: OrchestrationReadModel;
   configureFixture?: (fixture: TestFixture) => void;
+  initialEntries?: string[];
 }): Promise<MountedChatView> {
   fixture = buildFixture(options.snapshot);
   options.configureFixture?.(fixture);
@@ -649,7 +656,7 @@ async function mountChatView(options: {
 
   const router = getRouter(
     createMemoryHistory({
-      initialEntries: [`/${THREAD_ID}`],
+      initialEntries: options.initialEntries ?? [`/${THREAD_ID}`],
     }),
   );
 
@@ -897,6 +904,7 @@ describe("ChatView timeline estimator parity (full app)", () => {
           createdAt: NOW_ISO,
           runtimeMode: "full-access",
           interactionMode: "default",
+          targetId: LOCAL_EXECUTION_TARGET_ID,
           branch: null,
           worktreePath: null,
           envMode: "local",
@@ -1082,6 +1090,39 @@ describe("ChatView timeline estimator parity (full app)", () => {
         .element(page.getByText("Send a message to start the conversation."))
         .toBeInTheDocument();
       await expect.element(page.getByTestId("composer-editor")).toBeInTheDocument();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("closes the diff panel from the header close button", async () => {
+    const mounted = await mountChatView({
+      viewport: {
+        ...DEFAULT_VIEWPORT,
+        name: "wide-desktop",
+        width: 1400,
+      },
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-diff-close" as MessageId,
+        targetText: "diff close test",
+      }),
+      initialEntries: [`/${THREAD_ID}?diff=1`],
+    });
+
+    try {
+      const closeButton = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('button[aria-label="Close diff panel"]'),
+        "Unable to find the diff panel close button.",
+      );
+
+      closeButton.click();
+
+      await vi.waitFor(
+        () => {
+          expect(mounted.router.state.location.search).toEqual({});
+        },
+        { timeout: 8_000, interval: 16 },
+      );
     } finally {
       await mounted.cleanup();
     }

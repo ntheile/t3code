@@ -29,6 +29,7 @@ import { TextGeneration, type TextGenerationShape } from "../src/git/Services/Te
 import { OrchestrationCommandReceiptRepositoryLive } from "../src/persistence/Layers/OrchestrationCommandReceipts.ts";
 import { OrchestrationEventStoreLive } from "../src/persistence/Layers/OrchestrationEventStore.ts";
 import { ProjectionCheckpointRepositoryLive } from "../src/persistence/Layers/ProjectionCheckpoints.ts";
+import { ExecutionTargetRepositoryLive } from "../src/persistence/Layers/ExecutionTargets.ts";
 import { ProjectionPendingApprovalRepositoryLive } from "../src/persistence/Layers/ProjectionPendingApprovals.ts";
 import { ProviderSessionRuntimeRepositoryLive } from "../src/persistence/Layers/ProviderSessionRuntime.ts";
 import { makeSqlitePersistenceLive } from "../src/persistence/Layers/Sqlite.ts";
@@ -42,6 +43,8 @@ import { makeCodexAdapterLive } from "../src/provider/Layers/CodexAdapter.ts";
 import { CodexAdapter } from "../src/provider/Services/CodexAdapter.ts";
 import { ProviderService } from "../src/provider/Services/ProviderService.ts";
 import { AnalyticsService } from "../src/telemetry/Services/AnalyticsService.ts";
+import { ExecutionTargetRuntimeLive } from "../src/executionTarget/Layers/ExecutionTargetRuntime.ts";
+import { ExecutionTargetServiceLive } from "../src/executionTarget/Layers/ExecutionTargetService.ts";
 import { CheckpointReactorLive } from "../src/orchestration/Layers/CheckpointReactor.ts";
 import { OrchestrationEngineLive } from "../src/orchestration/Layers/OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "../src/orchestration/Layers/ProjectionPipeline.ts";
@@ -247,6 +250,12 @@ export const makeOrchestrationIntegrationHarness = (
     const providerSessionDirectoryLayer = ProviderSessionDirectoryLive.pipe(
       Layer.provide(ProviderSessionRuntimeRepositoryLive),
     );
+    const executionTargetServiceLayer = ExecutionTargetServiceLive.pipe(
+      Layer.provide(ExecutionTargetRepositoryLive),
+    );
+    const executionTargetRuntimeLayer = ExecutionTargetRuntimeLive.pipe(
+      Layer.provide(executionTargetServiceLayer),
+    );
     const realCodexRegistry = Layer.effect(
       ProviderAdapterRegistry,
       Effect.gen(function* () {
@@ -260,9 +269,10 @@ export const makeOrchestrationIntegrationHarness = (
         } as typeof ProviderAdapterRegistry.Service;
       }),
     ).pipe(
-      Layer.provide(makeCodexAdapterLive()),
+      Layer.provide(makeCodexAdapterLive().pipe(Layer.provide(executionTargetRuntimeLayer))),
       Layer.provideMerge(ServerConfig.layerTest(workspaceDir, stateDir)),
       Layer.provideMerge(NodeServices.layer),
+      Layer.provideMerge(executionTargetServiceLayer),
       Layer.provideMerge(providerSessionDirectoryLayer),
     );
     const providerLayer = useRealCodex
@@ -284,6 +294,7 @@ export const makeOrchestrationIntegrationHarness = (
       ProjectionPendingApprovalRepositoryLive,
       CheckpointStoreLive,
       providerLayer,
+      providerSessionDirectoryLayer,
       RuntimeReceiptBusLive,
     );
     const runtimeIngestionLayer = ProviderRuntimeIngestionLive.pipe(

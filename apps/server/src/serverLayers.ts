@@ -10,6 +10,7 @@ import { ServerConfig } from "./config";
 import { OrchestrationCommandReceiptRepositoryLive } from "./persistence/Layers/OrchestrationCommandReceipts";
 import { OrchestrationEventStoreLive } from "./persistence/Layers/OrchestrationEventStore";
 import { ProviderSessionRuntimeRepositoryLive } from "./persistence/Layers/ProviderSessionRuntime";
+import { ExecutionTargetRepositoryLive } from "./persistence/Layers/ExecutionTargets";
 import { OrchestrationEngineLive } from "./orchestration/Layers/OrchestrationEngine";
 import { CheckpointReactorLive } from "./orchestration/Layers/CheckpointReactor";
 import { OrchestrationReactorLive } from "./orchestration/Layers/OrchestrationReactor";
@@ -23,6 +24,7 @@ import { makeCodexAdapterLive } from "./provider/Layers/CodexAdapter";
 import { ProviderAdapterRegistryLive } from "./provider/Layers/ProviderAdapterRegistry";
 import { makeProviderServiceLive } from "./provider/Layers/ProviderService";
 import { ProviderSessionDirectoryLive } from "./provider/Layers/ProviderSessionDirectory";
+import { ProviderSessionDirectory } from "./provider/Services/ProviderSessionDirectory";
 import { ProviderService } from "./provider/Services/ProviderService";
 import { makeEventNdjsonLogger } from "./provider/Layers/EventNdjsonLogger";
 
@@ -36,9 +38,12 @@ import { GitServiceLive } from "./git/Layers/GitService";
 import { BunPtyAdapterLive } from "./terminal/Layers/BunPTY";
 import { NodePtyAdapterLive } from "./terminal/Layers/NodePTY";
 import { AnalyticsService } from "./telemetry/Services/AnalyticsService";
+import { ExecutionTargetServiceLive } from "./executionTarget/Layers/ExecutionTargetService";
+import { ExecutionTargetRuntimeLive } from "./executionTarget/Layers/ExecutionTargetRuntime";
+import { PortForwardManagerLive } from "./portForward/Layers/PortForwardManager";
 
 export function makeServerProviderLayer(): Layer.Layer<
-  ProviderService,
+  ProviderService | ProviderSessionDirectory,
   ProviderUnsupportedError,
   SqlClient.SqlClient | ServerConfig | FileSystem.FileSystem | AnalyticsService
 > {
@@ -55,16 +60,23 @@ export function makeServerProviderLayer(): Layer.Layer<
     const providerSessionDirectoryLayer = ProviderSessionDirectoryLive.pipe(
       Layer.provide(ProviderSessionRuntimeRepositoryLive),
     );
+    const executionTargetServiceLayer = ExecutionTargetServiceLive.pipe(
+      Layer.provide(ExecutionTargetRepositoryLive),
+    );
+    const executionTargetRuntimeLayer = ExecutionTargetRuntimeLive.pipe(
+      Layer.provide(executionTargetServiceLayer),
+    );
     const codexAdapterLayer = makeCodexAdapterLive(
       nativeEventLogger ? { nativeEventLogger } : undefined,
-    );
+    ).pipe(Layer.provide(executionTargetRuntimeLayer));
     const adapterRegistryLayer = ProviderAdapterRegistryLive.pipe(
       Layer.provide(codexAdapterLayer),
       Layer.provideMerge(providerSessionDirectoryLayer),
     );
-    return makeProviderServiceLive(
+    const providerServiceLayer = makeProviderServiceLive(
       canonicalEventLogger ? { canonicalEventLogger } : undefined,
     ).pipe(Layer.provide(adapterRegistryLayer), Layer.provide(providerSessionDirectoryLayer));
+    return Layer.merge(providerServiceLayer, providerSessionDirectoryLayer);
   }).pipe(Layer.unwrap);
 }
 
@@ -107,13 +119,21 @@ export function makeServerRuntimeServicesLayer() {
     Layer.provideMerge(checkpointReactorLayer),
   );
 
+  const executionTargetServiceLayer = ExecutionTargetServiceLive.pipe(
+    Layer.provide(ExecutionTargetRepositoryLive),
+  );
   const terminalLayer = TerminalManagerLive.pipe(
+    Layer.provide(executionTargetServiceLayer),
     Layer.provide(
       typeof Bun !== "undefined" && process.platform !== "win32"
         ? BunPtyAdapterLive
         : NodePtyAdapterLive,
     ),
   );
+  const executionTargetRuntimeLayer = ExecutionTargetRuntimeLive.pipe(
+    Layer.provide(executionTargetServiceLayer),
+  );
+  const portForwardLayer = PortForwardManagerLive.pipe(Layer.provide(executionTargetServiceLayer));
 
   const gitManagerLayer = GitManagerLive.pipe(
     Layer.provideMerge(gitCoreLayer),
@@ -124,8 +144,12 @@ export function makeServerRuntimeServicesLayer() {
   return Layer.mergeAll(
     orchestrationReactorLayer,
     gitCoreLayer,
+    textGenerationLayer,
     gitManagerLayer,
     terminalLayer,
+    portForwardLayer,
     KeybindingsLive,
+    executionTargetServiceLayer,
+    executionTargetRuntimeLayer,
   ).pipe(Layer.provideMerge(NodeServices.layer));
 }

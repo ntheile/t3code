@@ -137,6 +137,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           project_id AS "projectId",
           title,
           workspace_root AS "workspaceRoot",
+          target_id AS "targetId",
           default_model AS "defaultModel",
           scripts_json AS "scripts",
           created_at AS "createdAt",
@@ -155,6 +156,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         SELECT
           thread_id AS "threadId",
           project_id AS "projectId",
+          target_id AS "targetId",
           title,
           model,
           runtime_mode AS "runtimeMode",
@@ -239,6 +241,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       sql`
         SELECT
           thread_id AS "threadId",
+          target_id AS "targetId",
           status,
           provider_name AS "providerName",
           provider_session_id AS "providerSessionId",
@@ -504,6 +507,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             updatedAt = maxIso(updatedAt, row.updatedAt);
             sessionsByThread.set(row.threadId, {
               threadId: row.threadId,
+              targetId: row.targetId,
               status: row.status,
               providerName: row.providerName,
               runtimeMode: row.runtimeMode,
@@ -517,6 +521,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             id: row.projectId,
             title: row.title,
             workspaceRoot: row.workspaceRoot,
+            targetId: row.targetId,
             defaultModel: row.defaultModel,
             scripts: row.scripts,
             createdAt: row.createdAt,
@@ -527,6 +532,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           const threads: Array<OrchestrationThread> = threadRows.map((row) => ({
             id: row.threadId,
             projectId: row.projectId,
+            targetId: row.targetId,
             title: row.title,
             model: row.model,
             runtimeMode: row.runtimeMode,

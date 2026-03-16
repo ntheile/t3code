@@ -2,6 +2,7 @@ import {
   type ApprovalRequestId,
   DEFAULT_MODEL_BY_PROVIDER,
   type EditorId,
+  LOCAL_EXECUTION_TARGET_ID,
   type KeybindingCommand,
   type CodexReasoningEffort,
   type MessageId,
@@ -84,6 +85,7 @@ import {
 } from "../types";
 import { basenameOfPath } from "../vscode-icons";
 import { useTheme } from "../hooks/useTheme";
+import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
 import BranchToolbar from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
@@ -98,6 +100,7 @@ import {
   ListTodoIcon,
   LockIcon,
   LockOpenIcon,
+  PaperclipIcon,
   XIcon,
 } from "lucide-react";
 import { Button } from "./ui/button";
@@ -305,6 +308,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
   } | null>(null);
   const pendingInteractionAnchorFrameRef = useRef<number | null>(null);
   const composerEditorRef = useRef<ComposerPromptEditorHandle>(null);
+  const composerFileInputRef = useRef<HTMLInputElement>(null);
   const composerFormRef = useRef<HTMLFormElement>(null);
   const composerFormHeightRef = useRef(0);
   const composerImagesRef = useRef<ComposerImageAttachment[]>([]);
@@ -385,6 +389,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const activeLatestTurn = activeThread?.latestTurn ?? null;
   const latestTurnSettled = isLatestTurnSettled(activeLatestTurn, activeThread?.session ?? null);
   const activeProject = projects.find((p) => p.id === activeThread?.projectId);
+  const activeTargetId =
+    activeThread?.targetId ?? activeProject?.targetId ?? LOCAL_EXECUTION_TARGET_ID;
 
   const openPullRequestDialog = useCallback(
     (reference?: string) => {
@@ -912,11 +918,14 @@ export default function ChatView({ threadId }: ChatViewProps) {
     (debouncerState) => ({ isPending: debouncerState.isPending }),
   );
   const effectivePathQuery = pathTriggerQuery.length > 0 ? debouncedPathQuery : "";
-  const branchesQuery = useQuery(gitBranchesQueryOptions(gitCwd));
+  const branchesQuery = useQuery(
+    gitBranchesQueryOptions({ cwd: gitCwd, targetId: activeTargetId }),
+  );
   const serverConfigQuery = useQuery(serverConfigQueryOptions());
   const workspaceEntriesQuery = useQuery(
     projectSearchEntriesQueryOptions({
       cwd: gitCwd,
+      targetId: activeTargetId,
       query: effectivePathQuery,
       enabled: isPathTrigger,
       limit: 80,
@@ -1011,6 +1020,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
   );
   const activeProjectCwd = activeProject?.cwd ?? null;
   const activeThreadWorktreePath = activeThread?.worktreePath ?? null;
+  const useCompactTerminalPrompt = useMediaQuery({ max: "md", pointer: "coarse" });
   const threadTerminalRuntimeEnv = useMemo(() => {
     if (!activeProjectCwd) return {};
     return projectScriptRuntimeEnv({
@@ -1018,8 +1028,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
         cwd: activeProjectCwd,
       },
       worktreePath: activeThreadWorktreePath,
+      compactPathInPrompt: useCompactTerminalPrompt,
     });
-  }, [activeProjectCwd, activeThreadWorktreePath]);
+  }, [activeProjectCwd, activeThreadWorktreePath, useCompactTerminalPrompt]);
   // Default true while loading to avoid toolbar flicker.
   const isGitRepo = branchesQuery.data?.isRepo ?? true;
   const splitTerminalShortcutLabel = useMemo(
@@ -1032,6 +1043,10 @@ export default function ChatView({ threadId }: ChatViewProps) {
   );
   const closeTerminalShortcutLabel = useMemo(
     () => shortcutLabelForCommand(keybindings, "terminal.close"),
+    [keybindings],
+  );
+  const terminalToggleShortcutLabel = useMemo(
+    () => shortcutLabelForCommand(keybindings, "terminal.toggle"),
     [keybindings],
   );
   const diffPanelShortcutLabel = useMemo(
@@ -1138,17 +1153,18 @@ export default function ChatView({ threadId }: ChatViewProps) {
       const isFinalTerminal = terminalState.terminalIds.length <= 1;
       const fallbackExitWrite = () =>
         api.terminal
-          .write({ threadId: activeThreadId, terminalId, data: "exit\n" })
+          .write({ threadId: activeThreadId, targetId: activeTargetId, terminalId, data: "exit\n" })
           .catch(() => undefined);
       if ("close" in api.terminal && typeof api.terminal.close === "function") {
         void (async () => {
           if (isFinalTerminal) {
             await api.terminal
-              .clear({ threadId: activeThreadId, terminalId })
+              .clear({ threadId: activeThreadId, targetId: activeTargetId, terminalId })
               .catch(() => undefined);
           }
           await api.terminal.close({
             threadId: activeThreadId,
+            targetId: activeTargetId,
             terminalId,
             deleteHistory: true,
           });
@@ -1159,7 +1175,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       storeCloseTerminal(activeThreadId, terminalId);
       setTerminalFocusRequestId((value) => value + 1);
     },
-    [activeThreadId, storeCloseTerminal, terminalState.terminalIds.length],
+    [activeTargetId, activeThreadId, storeCloseTerminal, terminalState.terminalIds.length],
   );
   const runProjectScript = useCallback(
     async (
@@ -1207,6 +1223,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
           cwd: activeProject.cwd,
         },
         worktreePath: options?.worktreePath ?? activeThread.worktreePath ?? null,
+        compactPathInPrompt: useCompactTerminalPrompt,
         ...(options?.env ? { extraEnv: options.env } : {}),
       });
       const openTerminalInput: Parameters<typeof api.terminal.open>[0] = shouldCreateNewTerminal
@@ -1229,6 +1246,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
         await api.terminal.open(openTerminalInput);
         await api.terminal.write({
           threadId: activeThreadId,
+          targetId: activeTargetId,
           terminalId: targetTerminalId,
           data: `${script.command}\r`,
         });
@@ -1253,6 +1271,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
       terminalState.activeTerminalId,
       terminalState.runningTerminalIds,
       terminalState.terminalIds,
+      activeTargetId,
+      useCompactTerminalPrompt,
     ],
   );
   const persistProjectScripts = useCallback(
@@ -2311,6 +2331,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
           cwd: activeProject.cwd,
           branch: baseBranchForWorktree,
           newBranch,
+          targetId: activeTargetId,
         });
         nextThreadBranch = result.worktree.branch;
         nextThreadWorktreePath = result.worktree.path;
@@ -2483,6 +2504,23 @@ export default function ChatView({ threadId }: ChatViewProps) {
       threadId: activeThread.id,
       createdAt: new Date().toISOString(),
     });
+  };
+
+  const onComposerAttachButtonClick = () => {
+    const input = composerFileInputRef.current;
+    if (!input) return;
+    input.value = "";
+    input.click();
+  };
+
+  const onComposerFileInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.currentTarget.files ?? []);
+    if (files.length === 0) {
+      return;
+    }
+    addComposerImages(files);
+    event.currentTarget.value = "";
+    focusComposer();
   };
 
   const onRespondToApproval = useCallback(
@@ -3239,7 +3277,10 @@ export default function ChatView({ threadId }: ChatViewProps) {
           keybindings={keybindings}
           availableEditors={availableEditors}
           diffToggleShortcutLabel={diffPanelShortcutLabel}
+          terminalOpen={terminalState.terminalOpen}
+          terminalToggleShortcutLabel={terminalToggleShortcutLabel}
           gitCwd={gitCwd}
+          targetId={activeTargetId}
           diffOpen={diffOpen}
           onRunProjectScript={(script) => {
             void runProjectScript(script);
@@ -3247,6 +3288,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
           onAddProjectScript={saveProjectScript}
           onUpdateProjectScript={updateProjectScript}
           onDeleteProjectScript={deleteProjectScript}
+          onToggleTerminal={toggleTerminalVisibility}
           onToggleDiff={onToggleDiff}
         />
       </header>
@@ -3327,6 +3369,15 @@ export default function ChatView({ threadId }: ChatViewProps) {
               className="mx-auto w-full min-w-0 max-w-3xl"
               data-chat-composer-form="true"
             >
+              <input
+                ref={composerFileInputRef}
+                type="file"
+                accept="image/*"
+                multiple
+                className="sr-only"
+                tabIndex={-1}
+                onChange={onComposerFileInputChange}
+              />
               <div
                 className={`group rounded-[20px] border bg-card transition-colors duration-200 focus-within:border-ring/45 ${
                   isDragOverComposer ? "border-primary/70 bg-accent/30" : "border-border"
@@ -3509,6 +3560,28 @@ export default function ChatView({ threadId }: ChatViewProps) {
                           : "gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden sm:min-w-max sm:overflow-visible",
                       )}
                     >
+                      <Button
+                        variant="ghost"
+                        className="shrink-0 whitespace-nowrap px-2 text-muted-foreground/70 hover:text-foreground/80 sm:px-3"
+                        size="sm"
+                        type="button"
+                        onClick={onComposerAttachButtonClick}
+                        disabled={
+                          isComposerApprovalState ||
+                          pendingUserInputs.length > 0 ||
+                          activePendingProgress != null ||
+                          isConnecting
+                        }
+                        title="Attach images"
+                      >
+                        <PaperclipIcon />
+                        {!isComposerFooterCompact ? (
+                          <span className="sr-only sm:not-sr-only">Attach</span>
+                        ) : (
+                          <span className="sr-only">Attach</span>
+                        )}
+                      </Button>
+
                       {/* Provider/model picker */}
                       <ProviderModelPicker
                         compact={isComposerFooterCompact}
@@ -3816,6 +3889,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
               key={pullRequestDialogState.key}
               open
               cwd={activeProject?.cwd ?? null}
+              targetId={activeTargetId}
               initialReference={pullRequestDialogState.initialReference}
               onOpenChange={(open) => {
                 if (!open) {
@@ -3836,6 +3910,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
             markdownCwd={gitCwd ?? undefined}
             workspaceRoot={activeProject?.cwd ?? undefined}
             timestampFormat={timestampFormat}
+            targetId={activeTargetId}
             onClose={() => {
               setPlanSidebarOpen(false);
               // Track that the user explicitly dismissed for this turn so auto-open won't fight them.
@@ -3857,6 +3932,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
           <ThreadTerminalDrawer
             key={activeThread.id}
             threadId={activeThread.id}
+            targetId={activeTargetId}
             cwd={gitCwd ?? activeProject.cwd}
             runtimeEnv={threadTerminalRuntimeEnv}
             height={terminalState.terminalHeight}

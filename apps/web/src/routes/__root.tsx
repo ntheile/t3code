@@ -24,6 +24,8 @@ import { onServerConfigUpdated, onServerWelcome } from "../wsNativeApi";
 import { providerQueryKeys } from "../lib/providerReactQuery";
 import { projectQueryKeys } from "../lib/projectReactQuery";
 import { collectActiveTerminalThreadIds } from "../lib/terminalStateCleanup";
+import { subscribeToViewportChanges, syncViewportHeightCssVar } from "../lib/viewport";
+import { useAppSettings } from "../appSettings";
 
 export const Route = createRootRouteWithContext<{
   queryClient: QueryClient;
@@ -51,12 +53,38 @@ function RootRouteView() {
   return (
     <ToastProvider>
       <AnchoredToastProvider>
+        <ViewportMetricsSync />
+        <UiScaleSync />
         <EventRouter />
         <DesktopProjectBootstrap />
         <Outlet />
       </AnchoredToastProvider>
     </ToastProvider>
   );
+}
+
+function ViewportMetricsSync() {
+  useEffect(() => {
+    syncViewportHeightCssVar();
+    return subscribeToViewportChanges(() => {
+      syncViewportHeightCssVar();
+    });
+  }, []);
+
+  return null;
+}
+
+function UiScaleSync() {
+  const { settings } = useAppSettings();
+
+  useEffect(() => {
+    document.documentElement.dataset.uiScale = settings.uiScale;
+    return () => {
+      delete document.documentElement.dataset.uiScale;
+    };
+  }, [settings.uiScale]);
+
+  return null;
 }
 
 function RootRouteErrorView({ error, reset }: ErrorComponentProps) {

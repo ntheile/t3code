@@ -7,8 +7,10 @@
  * @module ProjectionThreadSessionRepository
  */
 import {
+  ExecutionTargetId,
   RuntimeMode,
   IsoDateTime,
+  LOCAL_EXECUTION_TARGET_ID,
   OrchestrationSessionStatus,
   ThreadId,
   TurnId,
@@ -20,6 +22,7 @@ import type { ProjectionRepositoryError } from "../Errors.ts";
 
 export const ProjectionThreadSession = Schema.Struct({
   threadId: ThreadId,
+  targetId: ExecutionTargetId.pipe(Schema.withDecodingDefault(() => LOCAL_EXECUTION_TARGET_ID)),
   status: OrchestrationSessionStatus,
   providerName: Schema.NullOr(Schema.String),
   runtimeMode: RuntimeMode,

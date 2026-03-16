@@ -1,14 +1,26 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
-import { useCallback, useState } from "react";
-import { type ProviderKind } from "@t3tools/contracts";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useCallback, useRef, useState } from "react";
+import {
+  LOCAL_EXECUTION_TARGET_ID,
+  type ExecutionTarget,
+  type PortForwardProtocolHint,
+  type ProviderKind,
+} from "@t3tools/contracts";
 import { getModelOptions, normalizeModelSlug } from "@t3tools/shared/model";
 import { MAX_CUSTOM_MODEL_LENGTH, useAppSettings } from "../appSettings";
 import { resolveAndPersistPreferredEditor } from "../editorPreferences";
 import { isElectron } from "../env";
 import { useTheme } from "../hooks/useTheme";
 import { serverConfigQueryOptions } from "../lib/serverReactQuery";
+import { UI_SCALE_OPTIONS, type UiScale } from "../lib/uiScale";
+import {
+  executionTargetListQueryOptions,
+  executionTargetQueryKeys,
+} from "../lib/executionTargetReactQuery";
+import { portForwardListQueryOptions, portForwardQueryKeys } from "../lib/portForwardReactQuery";
 import { ensureNativeApi } from "../nativeApi";
+import { APP_VIEWPORT_CSS_HEIGHT } from "../lib/viewport";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import {
@@ -20,7 +32,7 @@ import {
 } from "../components/ui/select";
 import { Switch } from "../components/ui/switch";
 import { APP_VERSION } from "../branding";
-import { SidebarInset } from "~/components/ui/sidebar";
+import { SidebarInset, SidebarTrigger } from "~/components/ui/sidebar";
 
 const THEME_OPTIONS = [
   {
@@ -56,10 +68,27 @@ const MODEL_PROVIDER_SETTINGS: Array<{
   },
 ] as const;
 
+function formatExecutionTargetConnection(target: ExecutionTarget): string {
+  switch (target.connection.kind) {
+    case "local":
+      return "Built-in local execution target.";
+    case "ssh":
+      return `${target.connection.user ? `${target.connection.user}@` : ""}${target.connection.host}${target.connection.port ? `:${target.connection.port}` : ""}`;
+    case "cloud":
+      return target.connection.baseUrl;
+  }
+}
 const TIMESTAMP_FORMAT_LABELS = {
   locale: "System default",
   "12-hour": "12-hour",
   "24-hour": "24-hour",
+} as const;
+const UI_SCALE_LABELS = {
+  small: "Small",
+  medium: "Medium",
+  large: "Large",
+  xl: "XL",
+  xxl: "XXL",
 } as const;
 
 function getCustomModelsForProvider(
@@ -95,9 +124,31 @@ function patchCustomModels(provider: ProviderKind, models: string[]) {
 function SettingsRouteView() {
   const { theme, setTheme, resolvedTheme } = useTheme();
   const { settings, defaults, updateSettings } = useAppSettings();
+  const queryClient = useQueryClient();
   const serverConfigQuery = useQuery(serverConfigQueryOptions());
+  const executionTargetQuery = useQuery(executionTargetListQueryOptions());
+  const portForwardQuery = useQuery(portForwardListQueryOptions());
   const [isOpeningKeybindings, setIsOpeningKeybindings] = useState(false);
   const [openKeybindingsError, setOpenKeybindingsError] = useState<string | null>(null);
+  const [editingExecutionTargetId, setEditingExecutionTargetId] = useState<
+    ExecutionTarget["id"] | null
+  >(null);
+  const [executionTargetLabel, setExecutionTargetLabel] = useState("");
+  const [executionTargetHost, setExecutionTargetHost] = useState("");
+  const [executionTargetUser, setExecutionTargetUser] = useState("");
+  const [executionTargetPort, setExecutionTargetPort] = useState("22");
+  const [executionTargetPassword, setExecutionTargetPassword] = useState("");
+  const [executionTargetCodexBinaryPath, setExecutionTargetCodexBinaryPath] = useState("");
+  const [executionTargetCodexHomePath, setExecutionTargetCodexHomePath] = useState("");
+  const executionTargetPasswordRef = useRef<HTMLInputElement | null>(null);
+  const [executionTargetError, setExecutionTargetError] = useState<string | null>(null);
+  const [portForwardTargetId, setPortForwardTargetId] = useState<string>(LOCAL_EXECUTION_TARGET_ID);
+  const [portForwardRemotePort, setPortForwardRemotePort] = useState("");
+  const [portForwardLocalPort, setPortForwardLocalPort] = useState("");
+  const [portForwardLabel, setPortForwardLabel] = useState("");
+  const [portForwardProtocolHint, setPortForwardProtocolHint] =
+    useState<PortForwardProtocolHint>("http");
+  const [portForwardError, setPortForwardError] = useState<string | null>(null);
   const [customModelInputByProvider, setCustomModelInputByProvider] = useState<
     Record<ProviderKind, string>
   >({
@@ -111,6 +162,134 @@ function SettingsRouteView() {
   const codexHomePath = settings.codexHomePath;
   const keybindingsConfigPath = serverConfigQuery.data?.keybindingsConfigPath ?? null;
   const availableEditors = serverConfigQuery.data?.availableEditors;
+
+  const invalidateExecutionTargets = useCallback(
+    () => queryClient.invalidateQueries({ queryKey: executionTargetQueryKeys.all }),
+    [queryClient],
+  );
+  const invalidatePortForwards = useCallback(
+    () => queryClient.invalidateQueries({ queryKey: portForwardQueryKeys.all }),
+    [queryClient],
+  );
+  const resetExecutionTargetForm = useCallback(() => {
+    setEditingExecutionTargetId(null);
+    setExecutionTargetLabel("");
+    setExecutionTargetHost("");
+    setExecutionTargetUser("");
+    setExecutionTargetPort("22");
+    setExecutionTargetPassword("");
+    setExecutionTargetCodexBinaryPath("");
+    setExecutionTargetCodexHomePath("");
+    setExecutionTargetError(null);
+  }, []);
+
+  const upsertExecutionTargetMutation = useMutation({
+    mutationFn: async () => {
+      const label = executionTargetLabel.trim();
+      const host = executionTargetHost.trim();
+      const user = executionTargetUser.trim();
+      const portValue = executionTargetPort.trim();
+      const passwordValue = executionTargetPasswordRef.current?.value ?? executionTargetPassword;
+      const codexBinaryPath = executionTargetCodexBinaryPath.trim();
+      const codexHomePath = executionTargetCodexHomePath.trim();
+      if (label.length === 0 || host.length === 0) {
+        throw new Error("Label and host are required.");
+      }
+      const port = portValue.length === 0 ? undefined : Number(portValue);
+      if (port !== undefined && (!Number.isInteger(port) || port < 1 || port > 65_535)) {
+        throw new Error("Port must be between 1 and 65535.");
+      }
+      const api = ensureNativeApi();
+      return api.server.upsertExecutionTarget({
+        ...(editingExecutionTargetId ? { id: editingExecutionTargetId } : {}),
+        label,
+        connection: {
+          kind: "ssh",
+          host,
+          ...(user.length > 0 ? { user } : {}),
+          ...(port !== undefined ? { port } : {}),
+          ...(passwordValue.length > 0 ? { password: passwordValue } : {}),
+          ...(codexBinaryPath.length > 0 ? { codexBinaryPath } : {}),
+          ...(codexHomePath.length > 0 ? { codexHomePath } : {}),
+        },
+      });
+    },
+    onSuccess: async () => {
+      resetExecutionTargetForm();
+      await invalidateExecutionTargets();
+    },
+    onError: (error) => {
+      setExecutionTargetError(
+        error instanceof Error ? error.message : "Unable to save execution target.",
+      );
+    },
+  });
+
+  const removeExecutionTargetMutation = useMutation({
+    mutationFn: async (targetId: ExecutionTarget["id"]) => {
+      const api = ensureNativeApi();
+      await api.server.removeExecutionTarget({ targetId });
+    },
+    onSuccess: async () => {
+      if (editingExecutionTargetId !== null) {
+        resetExecutionTargetForm();
+      }
+      await invalidateExecutionTargets();
+    },
+  });
+
+  const checkExecutionTargetMutation = useMutation({
+    mutationFn: async (targetId: ExecutionTarget["id"]) => {
+      const api = ensureNativeApi();
+      return api.server.checkExecutionTargetHealth({ targetId });
+    },
+    onSuccess: async () => {
+      await invalidateExecutionTargets();
+    },
+  });
+  const openPortForwardMutation = useMutation({
+    mutationFn: async () => {
+      const remotePort = Number(portForwardRemotePort.trim());
+      const localPortValue = portForwardLocalPort.trim();
+      const localPort = localPortValue.length > 0 ? Number(localPortValue) : undefined;
+      if (!Number.isInteger(remotePort) || remotePort < 1 || remotePort > 65_535) {
+        throw new Error("Remote port must be between 1 and 65535.");
+      }
+      if (
+        localPort !== undefined &&
+        (!Number.isInteger(localPort) || localPort < 1 || localPort > 65_535)
+      ) {
+        throw new Error("Local port must be between 1 and 65535.");
+      }
+      const api = ensureNativeApi();
+      return api.portForward.open({
+        targetId: portForwardTargetId as ExecutionTarget["id"],
+        remotePort,
+        ...(localPort !== undefined ? { localPort } : {}),
+        ...(portForwardLabel.trim().length > 0 ? { label: portForwardLabel.trim() } : {}),
+        protocolHint: portForwardProtocolHint,
+      });
+    },
+    onSuccess: async () => {
+      setPortForwardRemotePort("");
+      setPortForwardLocalPort("");
+      setPortForwardLabel("");
+      setPortForwardError(null);
+      await invalidatePortForwards();
+    },
+    onError: (error) => {
+      setPortForwardError(error instanceof Error ? error.message : "Unable to open port forward.");
+    },
+  });
+  const closePortForwardMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const api = ensureNativeApi();
+      await api.portForward.close({ id });
+    },
+    onSuccess: async () => {
+      await invalidatePortForwards();
+    },
+  });
 
   const openKeybindingsFile = useCallback(() => {
     if (!keybindingsConfigPath) return;
@@ -134,6 +313,22 @@ function SettingsRouteView() {
         setIsOpeningKeybindings(false);
       });
   }, [availableEditors, keybindingsConfigPath]);
+  const startEditingExecutionTarget = useCallback((target: ExecutionTarget) => {
+    if (target.connection.kind !== "ssh") {
+      return;
+    }
+    setEditingExecutionTargetId(target.id);
+    setExecutionTargetLabel(target.label);
+    setExecutionTargetHost(target.connection.host);
+    setExecutionTargetUser(target.connection.user ?? "");
+    setExecutionTargetPort(
+      target.connection.port !== undefined ? String(target.connection.port) : "22",
+    );
+    setExecutionTargetPassword("");
+    setExecutionTargetCodexBinaryPath(target.connection.codexBinaryPath ?? "");
+    setExecutionTargetCodexHomePath(target.connection.codexHomePath ?? "");
+    setExecutionTargetError(null);
+  }, []);
 
   const addCustomModel = useCallback(
     (provider: ProviderKind) => {
@@ -200,7 +395,10 @@ function SettingsRouteView() {
   );
 
   return (
-    <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground isolate">
+    <SidebarInset
+      className="min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground isolate"
+      style={{ height: APP_VIEWPORT_CSS_HEIGHT }}
+    >
       <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background text-foreground">
         {isElectron && (
           <div className="drag-region flex h-[52px] shrink-0 items-center border-b border-border px-5">
@@ -212,11 +410,14 @@ function SettingsRouteView() {
 
         <div className="flex-1 overflow-y-auto p-6">
           <div className="mx-auto flex w-full max-w-3xl flex-col gap-6">
-            <header className="space-y-1">
-              <h1 className="text-2xl font-semibold tracking-tight text-foreground">Settings</h1>
-              <p className="text-sm text-muted-foreground">
-                Configure app-level preferences for this device.
-              </p>
+            <header className="flex items-start gap-3">
+              <SidebarTrigger className="size-7 shrink-0" />
+              <div className="space-y-1">
+                <h1 className="text-2xl font-semibold tracking-tight text-foreground">Settings</h1>
+                <p className="text-sm text-muted-foreground">
+                  Configure app-level preferences for this device.
+                </p>
+              </div>
             </header>
 
             <section className="rounded-2xl border border-border bg-card p-5">
@@ -290,7 +491,39 @@ function SettingsRouteView() {
                   </Select>
                 </div>
 
-                {settings.timestampFormat !== defaults.timestampFormat ? (
+                <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
+                  <div>
+                    <p className="text-sm font-medium text-foreground">Font and button size</p>
+                    <p className="text-xs text-muted-foreground">
+                      Increases app font sizes and button sizes across the interface.
+                    </p>
+                  </div>
+                  <Select
+                    value={settings.uiScale}
+                    onValueChange={(value) => {
+                      if (!UI_SCALE_OPTIONS.includes(value as UiScale)) {
+                        return;
+                      }
+                      updateSettings({
+                        uiScale: value as UiScale,
+                      });
+                    }}
+                  >
+                    <SelectTrigger className="w-40" aria-label="UI size">
+                      <SelectValue>{UI_SCALE_LABELS[settings.uiScale]}</SelectValue>
+                    </SelectTrigger>
+                    <SelectPopup align="end">
+                      <SelectItem value="small">{UI_SCALE_LABELS.small}</SelectItem>
+                      <SelectItem value="medium">{UI_SCALE_LABELS.medium}</SelectItem>
+                      <SelectItem value="large">{UI_SCALE_LABELS.large}</SelectItem>
+                      <SelectItem value="xl">{UI_SCALE_LABELS.xl}</SelectItem>
+                      <SelectItem value="xxl">{UI_SCALE_LABELS.xxl}</SelectItem>
+                    </SelectPopup>
+                  </Select>
+                </div>
+
+                {settings.timestampFormat !== defaults.timestampFormat ||
+                settings.uiScale !== defaults.uiScale ? (
                   <div className="flex justify-end">
                     <Button
                       size="xs"
@@ -298,6 +531,7 @@ function SettingsRouteView() {
                       onClick={() =>
                         updateSettings({
                           timestampFormat: defaults.timestampFormat,
+                          uiScale: defaults.uiScale,
                         })
                       }
                     >
@@ -305,6 +539,328 @@ function SettingsRouteView() {
                     </Button>
                   </div>
                 ) : null}
+              </div>
+            </section>
+
+            <section className="rounded-2xl border border-border bg-card p-5">
+              <div className="mb-4">
+                <h2 className="text-sm font-medium text-foreground">Execution Targets</h2>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Register remote machines for thread execution, remote Git, and provider startup.
+                </p>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <label className="block space-y-1">
+                  <span className="text-xs font-medium text-foreground">Label</span>
+                  <Input
+                    value={executionTargetLabel}
+                    onChange={(event) => setExecutionTargetLabel(event.target.value)}
+                    placeholder="Staging Box"
+                  />
+                </label>
+
+                <label className="block space-y-1">
+                  <span className="text-xs font-medium text-foreground">Host</span>
+                  <Input
+                    value={executionTargetHost}
+                    onChange={(event) => setExecutionTargetHost(event.target.value)}
+                    placeholder="staging.example.com"
+                  />
+                </label>
+
+                <label className="block space-y-1">
+                  <span className="text-xs font-medium text-foreground">User</span>
+                  <Input
+                    value={executionTargetUser}
+                    onChange={(event) => setExecutionTargetUser(event.target.value)}
+                    placeholder="deploy"
+                  />
+                </label>
+
+                <label className="block space-y-1">
+                  <span className="text-xs font-medium text-foreground">Port</span>
+                  <Input
+                    value={executionTargetPort}
+                    onChange={(event) => setExecutionTargetPort(event.target.value)}
+                    inputMode="numeric"
+                    placeholder="22"
+                  />
+                </label>
+
+                <label className="block space-y-1 md:col-span-2">
+                  <span className="text-xs font-medium text-foreground">Password</span>
+                  <Input
+                    ref={executionTargetPasswordRef}
+                    nativeInput
+                    type="password"
+                    autoComplete="new-password"
+                    value={executionTargetPassword}
+                    onChange={(event) => setExecutionTargetPassword(event.target.value)}
+                    placeholder="Optional SSH password"
+                  />
+                  <p className="text-[11px] text-muted-foreground">
+                    Stored in the local app database. Leave blank while editing to keep the current
+                    password.
+                  </p>
+                </label>
+
+                <label className="block space-y-1">
+                  <span className="text-xs font-medium text-foreground">
+                    Remote Codex binary path
+                  </span>
+                  <Input
+                    value={executionTargetCodexBinaryPath}
+                    onChange={(event) => setExecutionTargetCodexBinaryPath(event.target.value)}
+                    placeholder="Auto-detect"
+                    spellCheck={false}
+                  />
+                  <p className="text-[11px] text-muted-foreground">
+                    Optional override when the remote machine does not expose <code>codex</code> on
+                    its default login PATH.
+                  </p>
+                </label>
+
+                <label className="block space-y-1">
+                  <span className="text-xs font-medium text-foreground">
+                    Remote CODEX_HOME path
+                  </span>
+                  <Input
+                    value={executionTargetCodexHomePath}
+                    onChange={(event) => setExecutionTargetCodexHomePath(event.target.value)}
+                    placeholder="Optional"
+                    spellCheck={false}
+                  />
+                  <p className="text-[11px] text-muted-foreground">
+                    Optional remote Codex config directory for this target only.
+                  </p>
+                </label>
+              </div>
+
+              <div className="mt-4 flex items-center gap-3">
+                <Button
+                  type="button"
+                  onClick={() => {
+                    setExecutionTargetError(null);
+                    upsertExecutionTargetMutation.mutate();
+                  }}
+                  disabled={upsertExecutionTargetMutation.isPending}
+                >
+                  {editingExecutionTargetId ? "Save SSH Target" : "Add SSH Target"}
+                </Button>
+                {editingExecutionTargetId ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={resetExecutionTargetForm}
+                    disabled={upsertExecutionTargetMutation.isPending}
+                  >
+                    Cancel
+                  </Button>
+                ) : null}
+                {executionTargetError ? (
+                  <p className="text-xs text-destructive">{executionTargetError}</p>
+                ) : null}
+              </div>
+
+              <div className="mt-5 space-y-3">
+                {(executionTargetQuery.data ?? []).map((target) => (
+                  <div
+                    key={target.id}
+                    className="flex flex-col gap-3 rounded-xl border border-border bg-background px-3 py-3 md:flex-row md:items-center md:justify-between"
+                  >
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <p className="truncate text-sm font-medium text-foreground">
+                          {target.label}
+                        </p>
+                        <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+                          {target.kind}
+                        </span>
+                        <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+                          {target.health?.status ?? "unknown"}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {formatExecutionTargetConnection(target)}
+                      </p>
+                      {target.health?.detail ? (
+                        <p className="mt-1 text-xs text-muted-foreground">{target.health.detail}</p>
+                      ) : null}
+                    </div>
+
+                    <div className="flex shrink-0 items-center gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => checkExecutionTargetMutation.mutate(target.id)}
+                        disabled={checkExecutionTargetMutation.isPending}
+                      >
+                        Check Health
+                      </Button>
+                      {target.id !== "local" ? (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => startEditingExecutionTarget(target)}
+                          disabled={upsertExecutionTargetMutation.isPending}
+                        >
+                          Edit
+                        </Button>
+                      ) : null}
+                      {target.id !== "local" ? (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => removeExecutionTargetMutation.mutate(target.id)}
+                          disabled={removeExecutionTargetMutation.isPending}
+                        >
+                          Remove
+                        </Button>
+                      ) : null}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+
+            <section className="rounded-2xl border border-border bg-card p-5">
+              <div className="mb-4">
+                <h2 className="text-sm font-medium text-foreground">Port Forwards</h2>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Open browser-facing tunnels to services running on a registered target.
+                </p>
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <label className="block space-y-1">
+                  <span className="text-xs font-medium text-foreground">Target</span>
+                  <select
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                    value={portForwardTargetId}
+                    onChange={(event) => setPortForwardTargetId(event.target.value)}
+                  >
+                    {(executionTargetQuery.data ?? []).map((target) => (
+                      <option key={target.id} value={target.id}>
+                        {target.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="block space-y-1">
+                  <span className="text-xs font-medium text-foreground">Protocol</span>
+                  <select
+                    className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                    value={portForwardProtocolHint}
+                    onChange={(event) =>
+                      setPortForwardProtocolHint(event.target.value as PortForwardProtocolHint)
+                    }
+                  >
+                    <option value="http">HTTP</option>
+                    <option value="https">HTTPS</option>
+                    <option value="tcp">TCP</option>
+                  </select>
+                </label>
+
+                <label className="block space-y-1">
+                  <span className="text-xs font-medium text-foreground">Remote port</span>
+                  <Input
+                    value={portForwardRemotePort}
+                    onChange={(event) => setPortForwardRemotePort(event.target.value)}
+                    inputMode="numeric"
+                    placeholder="3000"
+                  />
+                </label>
+
+                <label className="block space-y-1">
+                  <span className="text-xs font-medium text-foreground">Local port (optional)</span>
+                  <Input
+                    value={portForwardLocalPort}
+                    onChange={(event) => setPortForwardLocalPort(event.target.value)}
+                    inputMode="numeric"
+                    placeholder="auto"
+                  />
+                </label>
+
+                <label className="block space-y-1 md:col-span-2">
+                  <span className="text-xs font-medium text-foreground">Label (optional)</span>
+                  <Input
+                    value={portForwardLabel}
+                    onChange={(event) => setPortForwardLabel(event.target.value)}
+                    placeholder="Web UI"
+                  />
+                </label>
+              </div>
+
+              <div className="mt-4 flex items-center gap-3">
+                <Button
+                  type="button"
+                  onClick={() => {
+                    setPortForwardError(null);
+                    openPortForwardMutation.mutate();
+                  }}
+                  disabled={openPortForwardMutation.isPending}
+                >
+                  Open Port Forward
+                </Button>
+                {portForwardError ? (
+                  <p className="text-xs text-destructive">{portForwardError}</p>
+                ) : null}
+              </div>
+
+              <div className="mt-5 space-y-3">
+                {(portForwardQuery.data ?? []).map((forward) => (
+                  <div
+                    key={forward.id}
+                    className="flex flex-col gap-3 rounded-xl border border-border bg-background px-3 py-3 md:flex-row md:items-center md:justify-between"
+                  >
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <p className="truncate text-sm font-medium text-foreground">
+                          {forward.label ?? `${forward.targetId}:${forward.remotePort}`}
+                        </p>
+                        <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+                          {forward.status}
+                        </span>
+                        <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+                          {forward.protocolHint ?? "tcp"}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {forward.targetId} · 127.0.0.1:{forward.localPort} → {forward.remoteHost}:
+                        {forward.remotePort}
+                      </p>
+                      {forward.url ? (
+                        <p className="mt-1 text-xs text-muted-foreground">{forward.url}</p>
+                      ) : null}
+                    </div>
+
+                    <div className="flex shrink-0 items-center gap-2">
+                      {forward.url ? (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => {
+                            if (!forward.url) return;
+                            const api = ensureNativeApi();
+                            void api.shell.openExternal(forward.url);
+                          }}
+                        >
+                          Open
+                        </Button>
+                      ) : null}
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => closePortForwardMutation.mutate(forward.id)}
+                        disabled={closePortForwardMutation.isPending}
+                      >
+                        Close
+                      </Button>
+                    </div>
+                  </div>
+                ))}
               </div>
             </section>
 

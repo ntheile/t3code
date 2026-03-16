@@ -20,6 +20,7 @@ export function buildLocalDraftThread(
     id: threadId,
     codexThreadId: null,
     projectId: draftThread.projectId,
+    targetId: draftThread.targetId,
     title: "New thread",
     model: fallbackModel,
     runtimeMode: draftThread.runtimeMode,

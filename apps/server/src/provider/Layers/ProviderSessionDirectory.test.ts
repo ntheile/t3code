@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { ThreadId } from "@t3tools/contracts";
+import { LOCAL_EXECUTION_TARGET_ID, ThreadId } from "@t3tools/contracts";
 import { it, assert } from "@effect/vitest";
 import { assertFailure, assertSome } from "@effect/vitest/utils";
 import { Effect, Layer, Option } from "effect";
@@ -142,6 +142,7 @@ it.layer(makeDirectoryLayer(SqlitePersistenceMemory))("ProviderSessionDirectoryL
       yield* runtimeRepository.upsert({
         threadId,
         providerName: "cursor",
+        targetId: LOCAL_EXECUTION_TARGET_ID,
         adapterKey: "cursor",
         runtimeMode: "full-access",
         status: "running",

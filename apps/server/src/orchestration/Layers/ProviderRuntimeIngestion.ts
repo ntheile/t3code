@@ -5,6 +5,7 @@ import {
   MessageId,
   type OrchestrationEvent,
   CheckpointRef,
+  LOCAL_EXECUTION_TARGET_ID,
   isToolLifecycleItemType,
   ThreadId,
   TurnId,
@@ -860,6 +861,7 @@ const make = Effect.gen(function* () {
             threadId: thread.id,
             session: {
               threadId: thread.id,
+              targetId: thread.session?.targetId ?? thread.targetId ?? LOCAL_EXECUTION_TARGET_ID,
               status,
               providerName: event.provider,
               runtimeMode: thread.session?.runtimeMode ?? "full-access",
@@ -1029,6 +1031,7 @@ const make = Effect.gen(function* () {
             threadId: thread.id,
             session: {
               threadId: thread.id,
+              targetId: thread.session?.targetId ?? thread.targetId ?? LOCAL_EXECUTION_TARGET_ID,
               status: "error",
               providerName: event.provider,
               runtimeMode: thread.session?.runtimeMode ?? "full-access",

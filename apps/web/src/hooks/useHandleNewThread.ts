@@ -1,4 +1,10 @@
-import { DEFAULT_RUNTIME_MODE, type ProjectId, ThreadId } from "@t3tools/contracts";
+import {
+  DEFAULT_RUNTIME_MODE,
+  LOCAL_EXECUTION_TARGET_ID,
+  type ExecutionTargetId,
+  type ProjectId,
+  ThreadId,
+} from "@t3tools/contracts";
 import { useNavigate, useParams } from "@tanstack/react-router";
 import { useCallback } from "react";
 import {
@@ -29,6 +35,7 @@ export function useHandleNewThread() {
     (
       projectId: ProjectId,
       options?: {
+        targetId?: ExecutionTargetId;
         branch?: string | null;
         worktreePath?: string | null;
         envMode?: DraftThreadEnvMode;
@@ -44,14 +51,20 @@ export function useHandleNewThread() {
       const hasBranchOption = options?.branch !== undefined;
       const hasWorktreePathOption = options?.worktreePath !== undefined;
       const hasEnvModeOption = options?.envMode !== undefined;
+      const hasTargetIdOption = options?.targetId !== undefined;
+      const projectTargetId =
+        options?.targetId ??
+        projects.find((project) => project.id === projectId)?.targetId ??
+        LOCAL_EXECUTION_TARGET_ID;
       const storedDraftThread = getDraftThreadByProjectId(projectId);
       const latestActiveDraftThread: DraftThreadState | null = routeThreadId
         ? getDraftThread(routeThreadId)
         : null;
       if (storedDraftThread) {
         return (async () => {
-          if (hasBranchOption || hasWorktreePathOption || hasEnvModeOption) {
+          if (hasBranchOption || hasWorktreePathOption || hasEnvModeOption || hasTargetIdOption) {
             setDraftThreadContext(storedDraftThread.threadId, {
+              ...(hasTargetIdOption ? { targetId: projectTargetId } : {}),
               ...(hasBranchOption ? { branch: options?.branch ?? null } : {}),
               ...(hasWorktreePathOption ? { worktreePath: options?.worktreePath ?? null } : {}),
               ...(hasEnvModeOption ? { envMode: options?.envMode } : {}),
@@ -75,8 +88,9 @@ export function useHandleNewThread() {
         routeThreadId &&
         latestActiveDraftThread.projectId === projectId
       ) {
-        if (hasBranchOption || hasWorktreePathOption || hasEnvModeOption) {
+        if (hasBranchOption || hasWorktreePathOption || hasEnvModeOption || hasTargetIdOption) {
           setDraftThreadContext(routeThreadId, {
+            ...(hasTargetIdOption ? { targetId: projectTargetId } : {}),
             ...(hasBranchOption ? { branch: options?.branch ?? null } : {}),
             ...(hasWorktreePathOption ? { worktreePath: options?.worktreePath ?? null } : {}),
             ...(hasEnvModeOption ? { envMode: options?.envMode } : {}),
@@ -91,6 +105,7 @@ export function useHandleNewThread() {
       return (async () => {
         setProjectDraftThreadId(projectId, threadId, {
           createdAt,
+          targetId: projectTargetId,
           branch: options?.branch ?? null,
           worktreePath: options?.worktreePath ?? null,
           envMode: options?.envMode ?? "local",
@@ -103,7 +118,7 @@ export function useHandleNewThread() {
         });
       })();
     },
-    [navigate, routeThreadId],
+    [navigate, projects, routeThreadId],
   );
 
   return {
