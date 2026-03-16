@@ -1,5 +1,11 @@
 import { ThreadId } from "@t3tools/contracts";
-import { createFileRoute, retainSearchParams, useNavigate } from "@tanstack/react-router";
+import {
+  Outlet,
+  createFileRoute,
+  retainSearchParams,
+  useMatchRoute,
+  useNavigate,
+} from "@tanstack/react-router";
 import { Suspense, lazy, type ReactNode, useCallback, useEffect, useState } from "react";
 
 import ChatView from "../components/ChatView";
@@ -164,6 +170,7 @@ const DiffPanelInlineSidebar = (props: {
 function ChatThreadRouteView() {
   const threadsHydrated = useStore((store) => store.threadsHydrated);
   const navigate = useNavigate();
+  const matchRoute = useMatchRoute();
   const threadId = Route.useParams({
     select: (params) => ThreadId.makeUnsafe(params.threadId),
   });
@@ -219,6 +226,11 @@ function ChatThreadRouteView() {
 
   if (!threadsHydrated || !routeThreadExists) {
     return null;
+  }
+
+  const fullDiffOpen = Boolean(matchRoute({ to: "/$threadId/diff", params: { threadId } }));
+  if (fullDiffOpen) {
+    return <Outlet />;
   }
 
   const shouldRenderDiffContent = diffOpen || hasOpenedDiff;

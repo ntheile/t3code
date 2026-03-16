@@ -553,6 +553,8 @@ label:has(> select#reasoning-effort) select {
 /* Diffs theme bridge (match diff surfaces to app palette) */
 .diff-panel-viewport {
   background: color-mix(in srgb, var(--background) 94%, var(--card));
+  overscroll-behavior: contain;
+  touch-action: pan-y;
 }
 
 .diff-render-file {
@@ -560,4 +562,30 @@ label:has(> select#reasoning-effort) select {
   border-radius: 0.5rem;
   overflow: clip;
   background: color-mix(in srgb, var(--card) 92%, var(--background));
+}
+
+.diff-file-tree-scroll {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+  touch-action: pan-y;
+}
+
+.diff-render-surface {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+  overscroll-behavior-y: contain;
+  touch-action: pan-x pan-y;
+}
+
+.diff-render-canvas {
+  min-width: 100%;
+  width: max-content;
+}
+
+.diff-render-canvas[data-diff-render-mode="split"] {
+  min-width: 72rem;
+}
+
+.diff-render-canvas[data-diff-render-mode="stacked"] {
+  min-width: 48rem;
 }
