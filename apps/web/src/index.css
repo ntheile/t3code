@@ -126,6 +126,12 @@ html {
   font-size: var(--app-root-font-size);
 }
 
+@media (max-width: 640px) {
+  html {
+    font-size: min(var(--app-root-font-size), 17px);
+  }
+}
+
 html[data-ui-scale="small"] {
   --app-root-font-size: 14px;
 }
