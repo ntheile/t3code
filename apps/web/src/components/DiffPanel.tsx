@@ -1,4 +1,3 @@
-import { FileDiff, Virtualizer } from "@pierre/diffs/react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { ThreadId, type TurnId } from "@t3tools/contracts";
@@ -12,10 +11,10 @@ import { resolvePathLinkTarget } from "../terminal-links";
 import { parseDiffRouteSearch, stripDiffSearchParams } from "../diffRouteSearch";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useTheme } from "../hooks/useTheme";
-import { resolveDiffThemeName } from "../lib/diffRendering";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
 import { useStore } from "../store";
 import { resolveThreadTargetId } from "../threadTarget";
+import { resolveThreadGitCwd } from "../threadGitCwd";
 import { Button } from "./ui/button";
 import { useAppSettings } from "../appSettings";
 import {
@@ -30,12 +29,12 @@ import {
 } from "./diff/diffFileTreeScrollState";
 import {
   buildDiffSelectionRenderKey,
-  buildFileDiffRenderKey,
-  DIFF_PANEL_UNSAFE_CSS,
   getRenderablePatch,
   resolveFileDiffPath,
 } from "./diff/diffRendering";
+import { shouldShowNoCompletedTurnsState } from "./diff/diffViewState";
 import { DiffResizableSidebar } from "./diff/DiffResizableSidebar";
+import { DiffFileDiffList } from "./diff/DiffFileDiffList";
 import { DiffPanelLoadingState, DiffPanelShell, type DiffPanelMode } from "./DiffPanelShell";
 
 type DiffThemeType = "light" | "dark";
@@ -82,10 +81,22 @@ export default function DiffPanel({
   const activeProject = useStore((store) =>
     activeProjectId ? store.projects.find((project) => project.id === activeProjectId) : undefined,
   );
-  const activeCwd = activeThread?.worktreePath ?? activeProject?.cwd;
   const targetId = resolveThreadTargetId({
     thread: activeThread,
     projectTargetId: activeProject?.targetId ?? null,
+  });
+  const projectBranchMetadataQuery = useQuery({
+    ...gitBranchesQueryOptions({ cwd: activeProject?.cwd ?? null, targetId }),
+    enabled:
+      activeProject?.cwd !== undefined &&
+      activeProject?.cwd !== null &&
+      activeThread?.worktreePath === null &&
+      activeThread?.branch !== null,
+  });
+  const activeCwd = resolveThreadGitCwd({
+    thread: activeThread,
+    project: activeProject,
+    branches: projectBranchMetadataQuery.data?.branches,
   });
   const gitBranchesQuery = useQuery(gitBranchesQueryOptions({ cwd: activeCwd ?? null, targetId }));
   const isGitRepo = gitBranchesQuery.data?.isRepo ?? true;
@@ -266,6 +277,7 @@ export default function DiffPanel({
     variant === "full" ? (activeFileDiff ? [activeFileDiff] : []) : renderableFiles;
   const shouldCollapseFileTreeOnMobile =
     variant === "full" && (isMobileViewport || isTouchViewport);
+  const shouldVirtualizeFileDiffs = !shouldCollapseFileTreeOnMobile;
   const showFileTree =
     variant === "full" &&
     renderablePatch?.kind === "files" &&
@@ -442,6 +454,19 @@ export default function DiffPanel({
       shouldCollapseFileTreeOnMobile,
     ],
   );
+  const buildFileClickCaptureHandler = useCallback(
+    (filePath: string) => (event: React.MouseEvent<HTMLDivElement>) => {
+      const nativeEvent = event.nativeEvent as MouseEvent;
+      const composedPath = nativeEvent.composedPath?.() ?? [];
+      const clickedHeader = composedPath.some((node) => {
+        if (!(node instanceof Element)) return false;
+        return node.hasAttribute("data-title");
+      });
+      if (!clickedHeader) return;
+      openDiffFileInEditor(filePath);
+    },
+    [openDiffFileInEditor],
+  );
   const toggleDirectory = useCallback((directoryPath: string) => {
     setExpandedDirectories((current) => ({
       ...current,
@@ -516,7 +541,10 @@ export default function DiffPanel({
         <div className="flex flex-1 items-center justify-center px-5 text-center text-xs text-muted-foreground/70">
           Turn diffs are unavailable because this project is not a git repository.
         </div>
-      ) : orderedTurnDiffSummaries.length === 0 ? (
+      ) : shouldShowNoCompletedTurnsState({
+          isUncommittedSelection,
+          orderedTurnCount: orderedTurnDiffSummaries.length,
+        }) ? (
         <div className="flex flex-1 items-center justify-center px-5 text-center text-xs text-muted-foreground/70">
           No completed turns yet.
         </div>
@@ -605,53 +633,15 @@ export default function DiffPanel({
                   </div>
                 )
               ) : renderablePatch.kind === "files" ? (
-                <Virtualizer
-                  key={`${diffSelectionRenderKey}:full-virtualizer`}
+                <DiffFileDiffList
                   className="diff-render-surface h-full min-h-0 overflow-auto px-2 pb-2"
-                  config={{
-                    overscrollSize: 600,
-                    intersectionObserverMargin: 1200,
-                  }}
-                >
-                  <div
-                    className="diff-render-canvas min-w-full w-max"
-                    data-diff-render-mode={diffRenderMode}
-                  >
-                    {visibleFileDiffs.map((fileDiff) => {
-                      const filePath = resolveFileDiffPath(fileDiff);
-                      const fileKey = buildFileDiffRenderKey(fileDiff);
-                      const themedFileKey = `${diffSelectionRenderKey}:${fileKey}:${resolvedTheme}`;
-                      return (
-                        <div
-                          key={themedFileKey}
-                          data-diff-file-path={filePath}
-                          className="diff-render-file mb-2 rounded-md first:mt-2 last:mb-0"
-                          onClickCapture={(event) => {
-                            const nativeEvent = event.nativeEvent as MouseEvent;
-                            const composedPath = nativeEvent.composedPath?.() ?? [];
-                            const clickedHeader = composedPath.some((node) => {
-                              if (!(node instanceof Element)) return false;
-                              return node.hasAttribute("data-title");
-                            });
-                            if (!clickedHeader) return;
-                            openDiffFileInEditor(filePath);
-                          }}
-                        >
-                          <FileDiff
-                            fileDiff={fileDiff}
-                            options={{
-                              diffStyle: diffRenderMode === "split" ? "split" : "unified",
-                              lineDiffType: "none",
-                              theme: resolveDiffThemeName(resolvedTheme),
-                              themeType: resolvedTheme as DiffThemeType,
-                              unsafeCSS: DIFF_PANEL_UNSAFE_CSS,
-                            }}
-                          />
-                        </div>
-                      );
-                    })}
-                  </div>
-                </Virtualizer>
+                  diffRenderMode={diffRenderMode}
+                  fileDiffs={visibleFileDiffs}
+                  onFileClickCapture={buildFileClickCaptureHandler}
+                  renderKeyPrefix={`${diffSelectionRenderKey}:full`}
+                  resolvedTheme={resolvedTheme as DiffThemeType}
+                  virtualized={shouldVirtualizeFileDiffs}
+                />
               ) : (
                 <div className="diff-raw-surface h-full overflow-auto p-2">
                   <div className="diff-render-canvas min-w-full w-max space-y-2">
@@ -688,48 +678,15 @@ export default function DiffPanel({
               </div>
             )
           ) : renderablePatch.kind === "files" ? (
-            <Virtualizer
-              key={`${diffSelectionRenderKey}:compact-virtualizer`}
+            <DiffFileDiffList
               className="diff-render-surface h-full min-h-0 overflow-auto px-2 pb-2"
-              config={{
-                overscrollSize: 600,
-                intersectionObserverMargin: 1200,
-              }}
-            >
-              {visibleFileDiffs.map((fileDiff) => {
-                const filePath = resolveFileDiffPath(fileDiff);
-                const fileKey = buildFileDiffRenderKey(fileDiff);
-                const themedFileKey = `${diffSelectionRenderKey}:${fileKey}:${resolvedTheme}`;
-                return (
-                  <div
-                    key={themedFileKey}
-                    data-diff-file-path={filePath}
-                    className="diff-render-file mb-2 rounded-md first:mt-2 last:mb-0"
-                    onClickCapture={(event) => {
-                      const nativeEvent = event.nativeEvent as MouseEvent;
-                      const composedPath = nativeEvent.composedPath?.() ?? [];
-                      const clickedHeader = composedPath.some((node) => {
-                        if (!(node instanceof Element)) return false;
-                        return node.hasAttribute("data-title");
-                      });
-                      if (!clickedHeader) return;
-                      openDiffFileInEditor(filePath);
-                    }}
-                  >
-                    <FileDiff
-                      fileDiff={fileDiff}
-                      options={{
-                        diffStyle: diffRenderMode === "split" ? "split" : "unified",
-                        lineDiffType: "none",
-                        theme: resolveDiffThemeName(resolvedTheme),
-                        themeType: resolvedTheme as DiffThemeType,
-                        unsafeCSS: DIFF_PANEL_UNSAFE_CSS,
-                      }}
-                    />
-                  </div>
-                );
-              })}
-            </Virtualizer>
+              diffRenderMode={diffRenderMode}
+              fileDiffs={visibleFileDiffs}
+              onFileClickCapture={buildFileClickCaptureHandler}
+              renderKeyPrefix={`${diffSelectionRenderKey}:compact`}
+              resolvedTheme={resolvedTheme as DiffThemeType}
+              virtualized={shouldVirtualizeFileDiffs}
+            />
           ) : (
             <div className="diff-raw-surface h-full overflow-auto p-2">
               <div className="space-y-2">
