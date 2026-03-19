@@ -9,6 +9,7 @@ import {
   resolveFileDiffPath,
 } from "./diffRendering";
 import { resolveDiffThemeName } from "../../lib/diffRendering";
+import { cn } from "../../lib/utils";
 
 type DiffThemeType = "light" | "dark";
 
@@ -44,9 +45,21 @@ function DiffFileDiffEntry(props: {
   );
 }
 
-function DiffRenderCanvas(props: { children: ReactNode; className?: string }) {
+function DiffRenderCanvas(props: {
+  children: ReactNode;
+  className?: string;
+  diffRenderMode: DiffRenderMode;
+}) {
   return (
-    <div className={props.className ?? "diff-render-canvas min-w-full w-max"}>{props.children}</div>
+    <div
+      className={
+        props.className ??
+        cn("diff-render-canvas min-w-full", props.diffRenderMode === "split" ? "w-full" : "w-max")
+      }
+      data-diff-render-mode={props.diffRenderMode}
+    >
+      {props.children}
+    </div>
   );
 }
 
@@ -61,8 +74,14 @@ export function DiffFileDiffList(props: {
 }) {
   if (!props.virtualized) {
     return (
-      <div className={props.className}>
-        <DiffRenderCanvas>
+      <div
+        className={cn(
+          props.className,
+          props.diffRenderMode === "split" && "overflow-x-hidden overflow-y-auto",
+        )}
+        data-diff-render-mode={props.diffRenderMode}
+      >
+        <DiffRenderCanvas diffRenderMode={props.diffRenderMode}>
           {props.fileDiffs.map((fileDiff) => {
             const filePath = resolveFileDiffPath(fileDiff);
             return (
@@ -84,13 +103,23 @@ export function DiffFileDiffList(props: {
   return (
     <Virtualizer
       key={`${props.renderKeyPrefix}:virtualizer`}
-      className={props.className}
+      className={cn(
+        props.className,
+        props.diffRenderMode === "split" && "overflow-x-hidden overflow-y-auto",
+      )}
+      data-diff-render-mode={props.diffRenderMode}
       config={{
         overscrollSize: 600,
         intersectionObserverMargin: 1200,
       }}
     >
-      <DiffRenderCanvas className="diff-render-canvas min-w-full w-max">
+      <DiffRenderCanvas
+        className={cn(
+          "diff-render-canvas min-w-full",
+          props.diffRenderMode === "split" ? "w-full" : "w-max",
+        )}
+        diffRenderMode={props.diffRenderMode}
+      >
         {props.fileDiffs.map((fileDiff) => {
           const filePath = resolveFileDiffPath(fileDiff);
           return (
