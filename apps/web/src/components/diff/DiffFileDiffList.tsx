@@ -1,5 +1,5 @@
 import { FileDiff, Virtualizer } from "@pierre/diffs/react";
-import type { MouseEvent, ReactNode } from "react";
+import { type MouseEvent, type ReactNode, useRef } from "react";
 
 import { type DiffRenderMode } from "./DiffPanelHeader";
 import { type FileDiffMetadata } from "@pierre/diffs/react";
@@ -8,6 +8,7 @@ import {
   DIFF_PANEL_UNSAFE_CSS,
   resolveFileDiffPath,
 } from "./diffRendering";
+import { useMobileStackedDiffPan } from "./useMobileStackedDiffPan";
 import { resolveDiffThemeName } from "../../lib/diffRendering";
 import { cn } from "../../lib/utils";
 
@@ -28,10 +29,15 @@ function DiffFileDiffEntry(props: {
     <div
       key={themedFileKey}
       data-diff-file-path={filePath}
-      className="diff-render-file mb-2 rounded-md first:mt-2 last:mb-0"
+      data-diff-render-mode={props.diffRenderMode}
+      className={cn(
+        "diff-render-file mb-2 rounded-md first:mt-2 last:mb-0",
+        props.diffRenderMode === "split" ? "w-full" : "min-w-full w-max",
+      )}
       onClickCapture={props.onClickCapture}
     >
       <FileDiff
+        className="diff-render-host"
         fileDiff={props.fileDiff}
         options={{
           diffStyle: props.diffRenderMode === "split" ? "split" : "unified",
@@ -72,68 +78,71 @@ export function DiffFileDiffList(props: {
   resolvedTheme: DiffThemeType;
   virtualized: boolean;
 }) {
-  if (!props.virtualized) {
-    return (
-      <div
-        className={cn(
-          props.className,
-          props.diffRenderMode === "split" && "overflow-x-hidden overflow-y-auto",
-        )}
-        data-diff-render-mode={props.diffRenderMode}
-      >
-        <DiffRenderCanvas diffRenderMode={props.diffRenderMode}>
-          {props.fileDiffs.map((fileDiff) => {
-            const filePath = resolveFileDiffPath(fileDiff);
-            return (
-              <DiffFileDiffEntry
-                key={`${props.renderKeyPrefix}:${buildFileDiffRenderKey(fileDiff)}:${props.resolvedTheme}`}
-                diffRenderMode={props.diffRenderMode}
-                fileDiff={fileDiff}
-                onClickCapture={props.onFileClickCapture(filePath)}
-                renderKeyPrefix={props.renderKeyPrefix}
-                resolvedTheme={props.resolvedTheme}
-              />
-            );
-          })}
-        </DiffRenderCanvas>
-      </div>
-    );
-  }
+  const rootRef = useRef<HTMLDivElement | null>(null);
+
+  useMobileStackedDiffPan(rootRef, props.diffRenderMode === "stacked");
 
   return (
-    <Virtualizer
-      key={`${props.renderKeyPrefix}:virtualizer`}
-      className={cn(
-        props.className,
-        props.diffRenderMode === "split" && "overflow-x-hidden overflow-y-auto",
+    <div ref={rootRef} className="h-full min-h-0">
+      {!props.virtualized ? (
+        <div
+          className={cn(
+            props.className,
+            props.diffRenderMode === "split" && "overflow-x-hidden overflow-y-auto",
+          )}
+          data-diff-render-mode={props.diffRenderMode}
+        >
+          <DiffRenderCanvas diffRenderMode={props.diffRenderMode}>
+            {props.fileDiffs.map((fileDiff) => {
+              const filePath = resolveFileDiffPath(fileDiff);
+              return (
+                <DiffFileDiffEntry
+                  key={`${props.renderKeyPrefix}:${buildFileDiffRenderKey(fileDiff)}:${props.resolvedTheme}`}
+                  diffRenderMode={props.diffRenderMode}
+                  fileDiff={fileDiff}
+                  onClickCapture={props.onFileClickCapture(filePath)}
+                  renderKeyPrefix={props.renderKeyPrefix}
+                  resolvedTheme={props.resolvedTheme}
+                />
+              );
+            })}
+          </DiffRenderCanvas>
+        </div>
+      ) : (
+        <Virtualizer
+          key={`${props.renderKeyPrefix}:virtualizer`}
+          className={cn(
+            props.className,
+            props.diffRenderMode === "split" && "overflow-x-hidden overflow-y-auto",
+          )}
+          config={{
+            overscrollSize: 600,
+            intersectionObserverMargin: 1200,
+          }}
+        >
+          <DiffRenderCanvas
+            className={cn(
+              "diff-render-canvas min-w-full",
+              props.diffRenderMode === "split" ? "w-full" : "w-max",
+            )}
+            diffRenderMode={props.diffRenderMode}
+          >
+            {props.fileDiffs.map((fileDiff) => {
+              const filePath = resolveFileDiffPath(fileDiff);
+              return (
+                <DiffFileDiffEntry
+                  key={`${props.renderKeyPrefix}:${buildFileDiffRenderKey(fileDiff)}:${props.resolvedTheme}`}
+                  diffRenderMode={props.diffRenderMode}
+                  fileDiff={fileDiff}
+                  onClickCapture={props.onFileClickCapture(filePath)}
+                  renderKeyPrefix={props.renderKeyPrefix}
+                  resolvedTheme={props.resolvedTheme}
+                />
+              );
+            })}
+          </DiffRenderCanvas>
+        </Virtualizer>
       )}
-      data-diff-render-mode={props.diffRenderMode}
-      config={{
-        overscrollSize: 600,
-        intersectionObserverMargin: 1200,
-      }}
-    >
-      <DiffRenderCanvas
-        className={cn(
-          "diff-render-canvas min-w-full",
-          props.diffRenderMode === "split" ? "w-full" : "w-max",
-        )}
-        diffRenderMode={props.diffRenderMode}
-      >
-        {props.fileDiffs.map((fileDiff) => {
-          const filePath = resolveFileDiffPath(fileDiff);
-          return (
-            <DiffFileDiffEntry
-              key={`${props.renderKeyPrefix}:${buildFileDiffRenderKey(fileDiff)}:${props.resolvedTheme}`}
-              diffRenderMode={props.diffRenderMode}
-              fileDiff={fileDiff}
-              onClickCapture={props.onFileClickCapture(filePath)}
-              renderKeyPrefix={props.renderKeyPrefix}
-              resolvedTheme={props.resolvedTheme}
-            />
-          );
-        })}
-      </DiffRenderCanvas>
-    </Virtualizer>
+    </div>
   );
 }

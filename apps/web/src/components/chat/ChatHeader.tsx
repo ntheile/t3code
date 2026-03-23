@@ -13,6 +13,7 @@ import { Toggle } from "../ui/toggle";
 import { ThreadPageHeader } from "./ThreadPageHeader";
 
 interface ChatHeaderProps {
+  activeProjectColor: string | null;
   activeThreadId: ThreadId;
   activeThreadTitle: string;
   activeProjectName: string | undefined;
@@ -37,6 +38,7 @@ interface ChatHeaderProps {
 }
 
 export const ChatHeader = memo(function ChatHeader({
+  activeProjectColor,
   activeThreadId,
   activeThreadTitle,
   activeProjectName,
@@ -61,6 +63,7 @@ export const ChatHeader = memo(function ChatHeader({
 }: ChatHeaderProps) {
   return (
     <ThreadPageHeader
+      activeProjectColor={activeProjectColor}
       activeProjectName={activeProjectName}
       activeTab="chat"
       activeThreadId={activeThreadId}

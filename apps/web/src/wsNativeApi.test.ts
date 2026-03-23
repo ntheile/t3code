@@ -272,6 +272,7 @@ describe("wsNativeApi", () => {
         scripts: [],
         createdAt: "2026-02-24T00:00:00.000Z",
         updatedAt: "2026-02-24T00:00:00.000Z",
+        color: null,
       },
     } satisfies Extract<OrchestrationEvent, { type: "project.created" }>;
     emitPush(ORCHESTRATION_WS_CHANNELS.domainEvent, orchestrationEvent);

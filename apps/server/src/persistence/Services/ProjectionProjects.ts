@@ -24,6 +24,7 @@ export const ProjectionProject = Schema.Struct({
   workspaceRoot: Schema.String,
   targetId: ExecutionTargetId.pipe(Schema.withDecodingDefault(() => LOCAL_EXECUTION_TARGET_ID)),
   defaultModel: Schema.NullOr(Schema.String),
+  color: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefault(() => null)),
   scripts: Schema.Array(ProjectScript),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,

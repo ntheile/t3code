@@ -161,6 +161,7 @@ function mapProjectsFromReadModel(
       model:
         existing?.model ??
         resolveModelSlug(project.defaultModel ?? DEFAULT_MODEL_BY_PROVIDER.codex),
+      color: project.color ?? null,
       expanded:
         existing?.expanded ??
         (persistedExpandedProjectKeys.size > 0

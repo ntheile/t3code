@@ -149,6 +149,7 @@ export const OrchestrationProject = Schema.Struct({
     ExecutionTargetId.pipe(Schema.withDecodingDefault(() => LOCAL_EXECUTION_TARGET_ID)),
   ),
   defaultModel: Schema.NullOr(TrimmedNonEmptyString),
+  color: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefault(() => null)),
   scripts: Schema.Array(ProjectScript),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
@@ -333,6 +334,7 @@ const ProjectMetaUpdateCommand = Schema.Struct({
     ExecutionTargetId.pipe(Schema.withDecodingDefault(() => LOCAL_EXECUTION_TARGET_ID)),
   ),
   defaultModel: Schema.optional(TrimmedNonEmptyString),
+  color: Schema.optional(Schema.NullOr(Schema.String)),
   scripts: Schema.optional(Schema.Array(ProjectScript)),
 });
 
@@ -633,6 +635,7 @@ export const ProjectCreatedPayload = Schema.Struct({
     ExecutionTargetId.pipe(Schema.withDecodingDefault(() => LOCAL_EXECUTION_TARGET_ID)),
   ),
   defaultModel: Schema.NullOr(TrimmedNonEmptyString),
+  color: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefault(() => null)),
   scripts: Schema.Array(ProjectScript),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
@@ -646,6 +649,7 @@ export const ProjectMetaUpdatedPayload = Schema.Struct({
     ExecutionTargetId.pipe(Schema.withDecodingDefault(() => LOCAL_EXECUTION_TARGET_ID)),
   ),
   defaultModel: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  color: Schema.optional(Schema.NullOr(Schema.String)),
   scripts: Schema.optional(Schema.Array(ProjectScript)),
   updatedAt: IsoDateTime,
 });
