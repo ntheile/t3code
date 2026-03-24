@@ -9,11 +9,13 @@ import { type ThreadSessionTab } from "../../threadTabs";
 import { OpenInPicker } from "./OpenInPicker";
 import { ThreadHeaderTabs } from "./ThreadHeaderTabs";
 import { GitHubIcon } from "../Icons";
+import { resolveProjectBadgeStyle } from "./projectHeaderTheme";
 
 const EMPTY_AVAILABLE_EDITORS: readonly [] = [];
 const EMPTY_KEYBINDINGS: readonly [] = [];
 
 interface ThreadPageHeaderProps {
+  activeProjectColor?: string | null;
   activeProjectName: string | undefined;
   activeTab: ThreadSessionTab;
   activeThreadId: ThreadId;
@@ -26,6 +28,7 @@ interface ThreadPageHeaderProps {
 }
 
 export function ThreadPageHeader({
+  activeProjectColor = null,
   activeProjectName,
   activeTab,
   activeThreadId,
@@ -63,6 +66,13 @@ export function ThreadPageHeader({
     <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
       <div className="flex min-w-0 items-center gap-2 overflow-hidden sm:flex-1 sm:gap-3">
         <SidebarTrigger className="size-7 shrink-0" />
+        {activeProjectColor ? (
+          <span
+            aria-hidden="true"
+            className="size-2 shrink-0 rounded-full sm:hidden"
+            style={{ backgroundColor: activeProjectColor }}
+          />
+        ) : null}
         <h2
           className="min-w-0 shrink truncate text-sm font-medium text-foreground"
           title={activeThreadTitle}
@@ -70,7 +80,11 @@ export function ThreadPageHeader({
           {activeThreadTitle}
         </h2>
         {activeProjectName && (
-          <Badge variant="outline" className="hidden min-w-0 shrink truncate sm:inline-flex">
+          <Badge
+            variant="outline"
+            className="hidden min-w-0 shrink truncate sm:inline-flex"
+            style={resolveProjectBadgeStyle(activeProjectColor)}
+          >
             {activeProjectName}
           </Badge>
         )}

@@ -83,6 +83,7 @@ export interface Project {
   cwd: string;
   targetId: ExecutionTargetId;
   model: string;
+  color: string | null;
   expanded: boolean;
   scripts: ProjectScript[];
 }

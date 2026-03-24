@@ -570,6 +570,17 @@ label:has(> select#reasoning-effort) select {
   background: color-mix(in srgb, var(--card) 92%, var(--background));
 }
 
+.diff-render-file[data-diff-render-mode="stacked"] {
+  min-width: 100%;
+  width: max-content;
+  overflow: visible;
+}
+
+.diff-render-file[data-diff-render-mode="stacked"] [data-file] {
+  min-width: 100%;
+  width: max-content !important;
+}
+
 .diff-file-tree-scroll {
   -webkit-overflow-scrolling: touch;
   overscroll-behavior-y: contain;

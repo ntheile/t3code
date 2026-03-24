@@ -3,6 +3,10 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect } from "react";
 import ThreadNotesPage from "../components/ThreadNotesPage";
 import { ThreadPageHeader } from "../components/chat/ThreadPageHeader";
+import {
+  resolveProjectHeaderClassName,
+  resolveProjectHeaderStyle,
+} from "../components/chat/projectHeaderTheme";
 import { APP_VIEWPORT_CSS_HEIGHT } from "../lib/viewport";
 import { resolveThreadTargetId } from "../threadTarget";
 import { useThreadRouteData } from "../threadRouteData";
@@ -41,8 +45,15 @@ function ThreadNotesRouteView() {
       style={{ height: APP_VIEWPORT_CSS_HEIGHT }}
     >
       <div className="flex min-h-0 flex-1 flex-col">
-        <header className="sticky top-0 z-30 border-b border-border bg-background/95 px-3 py-2 backdrop-blur sm:px-5 sm:py-3">
+        <header
+          className={resolveProjectHeaderClassName(
+            "sticky top-0 z-30 border-b px-3 py-2 backdrop-blur sm:px-5 sm:py-3",
+            activeProject?.color ?? null,
+          )}
+          style={resolveProjectHeaderStyle(activeProject?.color ?? null)}
+        >
           <ThreadPageHeader
+            activeProjectColor={activeProject?.color ?? null}
             activeProjectName={activeProject?.name}
             activeTab="notes"
             activeThreadId={activeThread.id}

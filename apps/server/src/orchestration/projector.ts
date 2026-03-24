@@ -188,6 +188,7 @@ export function projectEvent(
             workspaceRoot: payload.workspaceRoot,
             targetId: payload.targetId ?? LOCAL_EXECUTION_TARGET_ID,
             defaultModel: payload.defaultModel,
+            color: payload.color ?? null,
             scripts: payload.scripts,
             createdAt: payload.createdAt,
             updatedAt: payload.updatedAt,
@@ -221,6 +222,7 @@ export function projectEvent(
                   ...(payload.defaultModel !== undefined
                     ? { defaultModel: payload.defaultModel }
                     : {}),
+                  ...(payload.color !== undefined ? { color: payload.color } : {}),
                   ...(payload.scripts !== undefined ? { scripts: payload.scripts } : {}),
                   updatedAt: payload.updatedAt,
                 }

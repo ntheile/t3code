@@ -55,6 +55,19 @@ export const DIFF_PANEL_UNSAFE_CSS = `
     -webkit-overflow-scrolling: touch;
     touch-action: pan-x pan-y !important;
   }
+
+  [data-diff-render-mode="stacked"] [data-code] {
+    overflow: visible !important;
+    overscroll-behavior-x: auto !important;
+    overscroll-behavior-y: auto !important;
+    touch-action: pan-y !important;
+  }
+
+  [data-diff-render-mode="stacked"] [data-content],
+  [data-diff-render-mode="stacked"] [data-line],
+  [data-diff-render-mode="stacked"] [data-column-number] {
+    touch-action: pan-y !important;
+  }
 }
 
 [data-file-info] {

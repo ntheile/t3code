@@ -10,6 +10,7 @@ import {
   TerminalIcon,
   TriangleAlertIcon,
 } from "lucide-react";
+import { ProjectColorPicker } from "./ProjectColorPicker";
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import {
   DndContext,
@@ -1574,7 +1575,15 @@ export default function Sidebar() {
                   return (
                     <SortableProjectItem key={project.id} projectId={project.id}>
                       {(dragHandleProps) => (
-                        <Collapsible className="group/collapsible" open={project.expanded}>
+                        <Collapsible
+                          className="group/collapsible"
+                          open={project.expanded}
+                          style={
+                            project.color
+                              ? { borderLeft: `3px solid ${project.color}`, borderRadius: "4px" }
+                              : undefined
+                          }
+                        >
                           <div className="group/project-header relative">
                             <SidebarMenuButton
                               size="sm"
@@ -1630,6 +1639,12 @@ export default function Sidebar() {
                                 ) : null}
                               </span>
                             </SidebarMenuButton>
+                            <span className="absolute top-1 right-7 z-10 group-focus-within/menu-item:opacity-100 group-hover/menu-item:opacity-100 md:opacity-0">
+                              <ProjectColorPicker
+                                projectId={project.id}
+                                currentColor={project.color}
+                              />
+                            </span>
                             <Tooltip>
                               <TooltipTrigger
                                 render={
