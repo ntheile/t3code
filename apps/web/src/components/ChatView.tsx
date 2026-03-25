@@ -3234,6 +3234,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
       preferTurnCompletion: Boolean(activeLatestTurn?.assistantMessageId),
     });
   }, [activeLatestTurn?.assistantMessageId, serverMessages]);
+  const latestNarratableAssistantMessageId = latestNarratableAssistantMessage?.id ?? null;
+  const latestNarratableAssistantText = latestNarratableAssistantMessage?.text ?? "";
+  const latestNarratableAssistantStreaming = latestNarratableAssistantMessage?.streaming ?? false;
 
   useEffect(() => {
     const assistantMessage = latestNarratableAssistantMessage;
@@ -3264,7 +3267,14 @@ export default function ChatView({ threadId }: ChatViewProps) {
     for (const chunk of chunks) {
       speakAssistantText(chunk);
     }
-  }, [latestNarratableAssistantMessage, settings.voiceAutoSpeakReplies, speakAssistantText]);
+  }, [
+    latestNarratableAssistantMessage,
+    latestNarratableAssistantMessageId,
+    latestNarratableAssistantStreaming,
+    latestNarratableAssistantText,
+    settings.voiceAutoSpeakReplies,
+    speakAssistantText,
+  ]);
 
   const startVoiceConversation = useCallback(() => {
     if (!settings.voiceAutoSpeakReplies) {

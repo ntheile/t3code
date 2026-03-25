@@ -32,6 +32,8 @@ export function useRealtimeSpeechOutput(input: UseRealtimeSpeechOutputInput) {
   const synthInFlightRef = useRef(false);
   const abortControllerRef = useRef<AbortController | null>(null);
   const objectUrlRef = useRef<string | null>(null);
+  const idleFinishTimeoutRef = useRef<number | null>(null);
+  const playbackWatchdogTimeoutRef = useRef<number | null>(null);
   const pendingQueueSkipCountRef = useRef(0);
   const currentSkipPendingRef = useRef(false);
   const enabledRef = useRef(enabled);
@@ -41,6 +43,7 @@ export function useRealtimeSpeechOutput(input: UseRealtimeSpeechOutputInput) {
   const playbackRateRef = useRef(playbackRate);
   const onUtteranceStartRef = useRef(onUtteranceStart);
   const onUtteranceEndRef = useRef(onUtteranceEnd);
+  const processQueueRef = useRef<(() => Promise<void>) | null>(null);
 
   useEffect(() => {
     enabledRef.current = enabled;
@@ -120,13 +123,44 @@ export function useRealtimeSpeechOutput(input: UseRealtimeSpeechOutputInput) {
     }
   }, []);
 
+  const clearIdleFinishTimeout = useCallback(() => {
+    if (idleFinishTimeoutRef.current !== null && typeof window !== "undefined") {
+      window.clearTimeout(idleFinishTimeoutRef.current);
+      idleFinishTimeoutRef.current = null;
+    }
+  }, []);
+
+  const clearPlaybackWatchdog = useCallback(() => {
+    if (playbackWatchdogTimeoutRef.current !== null && typeof window !== "undefined") {
+      window.clearTimeout(playbackWatchdogTimeoutRef.current);
+      playbackWatchdogTimeoutRef.current = null;
+    }
+  }, []);
+
   const finishUtterance = useCallback(() => {
+    clearIdleFinishTimeout();
+    clearPlaybackWatchdog();
     if (!utteranceActiveRef.current) {
       return;
     }
     utteranceActiveRef.current = false;
     onUtteranceEndRef.current?.();
-  }, []);
+  }, [clearIdleFinishTimeout, clearPlaybackWatchdog]);
+
+  const scheduleIdleFinish = useCallback(() => {
+    clearIdleFinishTimeout();
+    if (typeof window === "undefined") {
+      finishUtterance();
+      return;
+    }
+    idleFinishTimeoutRef.current = window.setTimeout(() => {
+      idleFinishTimeoutRef.current = null;
+      if (playingRef.current || synthInFlightRef.current || queueRef.current.length > 0) {
+        return;
+      }
+      finishUtterance();
+    }, 1500);
+  }, [clearIdleFinishTimeout, finishUtterance]);
 
   const closeSession = useCallback(() => {
     queueRef.current = [];
@@ -153,10 +187,11 @@ export function useRealtimeSpeechOutput(input: UseRealtimeSpeechOutputInput) {
     if (!next) {
       pendingQueueSkipCountRef.current = 0;
       currentSkipPendingRef.current = false;
-      finishUtterance();
+      scheduleIdleFinish();
       return;
     }
 
+    clearIdleFinishTimeout();
     if (!utteranceActiveRef.current) {
       utteranceActiveRef.current = true;
       onUtteranceStartRef.current?.();
@@ -214,7 +249,45 @@ export function useRealtimeSpeechOutput(input: UseRealtimeSpeechOutputInput) {
         void processQueue();
       }
     }
-  }, [applyPlaybackRate, ensureAudioElement, finishUtterance, revokeObjectUrl, threadId]);
+  }, [
+    applyPlaybackRate,
+    clearIdleFinishTimeout,
+    ensureAudioElement,
+    finishUtterance,
+    revokeObjectUrl,
+    scheduleIdleFinish,
+    threadId,
+  ]);
+
+  useEffect(() => {
+    processQueueRef.current = processQueue;
+  }, [processQueue]);
+
+  const schedulePlaybackWatchdog = useCallback(
+    (audioElement: HTMLAudioElement) => {
+      clearPlaybackWatchdog();
+      if (typeof window === "undefined") {
+        return;
+      }
+      const duration = audioElement.duration;
+      if (!Number.isFinite(duration) || duration <= 0) {
+        return;
+      }
+      const remainingSeconds = Math.max(0, duration - audioElement.currentTime);
+      const playbackRate = Math.max(0.1, audioElement.playbackRate || playbackRateRef.current || 1);
+      const timeoutMs = Math.ceil((remainingSeconds / playbackRate) * 1000) + 400;
+      playbackWatchdogTimeoutRef.current = window.setTimeout(() => {
+        playbackWatchdogTimeoutRef.current = null;
+        if (!playingRef.current) {
+          return;
+        }
+        playingRef.current = false;
+        revokeObjectUrl();
+        void processQueueRef.current?.();
+      }, timeoutMs);
+    },
+    [clearPlaybackWatchdog, revokeObjectUrl],
+  );
 
   useEffect(() => {
     applyPlaybackRate(audioElementRef.current);
@@ -227,10 +300,11 @@ export function useRealtimeSpeechOutput(input: UseRealtimeSpeechOutputInput) {
         return;
       }
 
+      clearIdleFinishTimeout();
       queueRef.current.push(trimmedText);
       await processQueue();
     },
-    [processQueue],
+    [clearIdleFinishTimeout, processQueue],
   );
 
   const advanceToNextSentence = useCallback(() => {
@@ -238,6 +312,8 @@ export function useRealtimeSpeechOutput(input: UseRealtimeSpeechOutputInput) {
     abortControllerRef.current?.abort();
     abortControllerRef.current = null;
     playingRef.current = false;
+    clearIdleFinishTimeout();
+    clearPlaybackWatchdog();
     if (audioElement) {
       audioElement.pause();
       audioElement.currentTime = 0;
@@ -246,7 +322,7 @@ export function useRealtimeSpeechOutput(input: UseRealtimeSpeechOutputInput) {
     }
     revokeObjectUrl();
     void processQueue();
-  }, [processQueue, revokeObjectUrl]);
+  }, [clearIdleFinishTimeout, clearPlaybackWatchdog, processQueue, revokeObjectUrl]);
 
   const skipCurrentSentence = useCallback(() => {
     const hasCurrentSentence =
@@ -278,6 +354,8 @@ export function useRealtimeSpeechOutput(input: UseRealtimeSpeechOutputInput) {
     abortControllerRef.current?.abort();
     abortControllerRef.current = null;
     playingRef.current = false;
+    clearIdleFinishTimeout();
+    clearPlaybackWatchdog();
     const audioElement = audioElementRef.current;
     if (audioElement) {
       audioElement.pause();
@@ -287,7 +365,7 @@ export function useRealtimeSpeechOutput(input: UseRealtimeSpeechOutputInput) {
     }
     revokeObjectUrl();
     finishUtterance();
-  }, [finishUtterance, revokeObjectUrl]);
+  }, [clearIdleFinishTimeout, clearPlaybackWatchdog, finishUtterance, revokeObjectUrl]);
 
   useEffect(() => {
     const audioElement = ensureAudioElement();
@@ -296,31 +374,48 @@ export function useRealtimeSpeechOutput(input: UseRealtimeSpeechOutputInput) {
     }
     const syncPlaybackRate = () => {
       applyPlaybackRate(audioElement);
+      if (playingRef.current) {
+        schedulePlaybackWatchdog(audioElement);
+      }
     };
     const handleEnded = () => {
+      clearPlaybackWatchdog();
       playingRef.current = false;
       revokeObjectUrl();
       void processQueue();
     };
     const handleError = () => {
+      clearPlaybackWatchdog();
       playingRef.current = false;
       queueRef.current = [];
       revokeObjectUrl();
       finishUtterance();
     };
+    const handlePlay = () => {
+      syncPlaybackRate();
+      schedulePlaybackWatchdog(audioElement);
+    };
     audioElement.addEventListener("loadedmetadata", syncPlaybackRate);
     audioElement.addEventListener("canplay", syncPlaybackRate);
-    audioElement.addEventListener("play", syncPlaybackRate);
+    audioElement.addEventListener("play", handlePlay);
     audioElement.addEventListener("ended", handleEnded);
     audioElement.addEventListener("error", handleError);
     return () => {
       audioElement.removeEventListener("loadedmetadata", syncPlaybackRate);
       audioElement.removeEventListener("canplay", syncPlaybackRate);
-      audioElement.removeEventListener("play", syncPlaybackRate);
+      audioElement.removeEventListener("play", handlePlay);
       audioElement.removeEventListener("ended", handleEnded);
       audioElement.removeEventListener("error", handleError);
     };
-  }, [applyPlaybackRate, ensureAudioElement, finishUtterance, processQueue, revokeObjectUrl]);
+  }, [
+    applyPlaybackRate,
+    clearPlaybackWatchdog,
+    ensureAudioElement,
+    finishUtterance,
+    processQueue,
+    revokeObjectUrl,
+    schedulePlaybackWatchdog,
+  ]);
 
   useEffect(() => {
     if (!enabled) {
