@@ -1,4 +1,4 @@
-import { MicIcon, SkipForward, SquareIcon, Volume2, VolumeX } from "lucide-react";
+import { AudioLinesIcon, MicIcon, SkipForward, SquareIcon, Volume2, VolumeX } from "lucide-react";
 
 import { cn } from "~/lib/utils";
 import { Button } from "../ui/button";
@@ -8,6 +8,8 @@ interface VoiceControlsGroupProps {
   readonly phase: "idle" | "connecting" | "ready" | "listening" | "processing" | "error";
   readonly permissionState: "unknown" | "prompt" | "granted" | "denied" | "unsupported";
   readonly micDisabled: boolean;
+  readonly wakePhraseEnabled: boolean;
+  readonly wakePhraseSupported: boolean;
   readonly speakerEnabled: boolean;
   readonly playbackRateLabel: string;
   readonly speakerDisabled?: boolean;
@@ -16,6 +18,7 @@ interface VoiceControlsGroupProps {
   readonly onStart: () => void;
   readonly onStop: () => void;
   readonly onToggleSpeaker: () => void;
+  readonly onToggleWakePhrase: () => void;
   readonly onCyclePlaybackRate: () => void;
   readonly onSkip: () => void;
 }
@@ -25,6 +28,8 @@ export function VoiceControlsGroup(props: VoiceControlsGroupProps) {
     phase,
     permissionState,
     micDisabled,
+    wakePhraseEnabled,
+    wakePhraseSupported,
     speakerEnabled,
     playbackRateLabel,
     speakerDisabled = false,
@@ -33,6 +38,7 @@ export function VoiceControlsGroup(props: VoiceControlsGroupProps) {
     onStart,
     onStop,
     onToggleSpeaker,
+    onToggleWakePhrase,
     onCyclePlaybackRate,
     onSkip,
   } = props;
@@ -87,6 +93,36 @@ export function VoiceControlsGroup(props: VoiceControlsGroupProps) {
               className={cn(
                 utilityButtonClassName,
                 "border-l border-input text-foreground hover:bg-accent/50",
+                wakePhraseEnabled && "bg-accent text-accent-foreground hover:bg-accent/85",
+              )}
+              variant="ghost"
+              size="icon-sm"
+              onClick={onToggleWakePhrase}
+              aria-label={
+                wakePhraseEnabled ? "Disable Hey T3 wake mode" : "Enable Hey T3 wake mode"
+              }
+              disabled={!wakePhraseSupported}
+            >
+              <AudioLinesIcon className="size-3" />
+            </Button>
+          }
+        />
+        <TooltipPopup side="bottom">
+          {wakePhraseSupported
+            ? wakePhraseEnabled
+              ? "Disable Hey T3 wake mode"
+              : "Enable Hey T3 wake mode"
+            : "Wake phrase mode is not supported in this browser"}
+        </TooltipPopup>
+      </Tooltip>
+
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <Button
+              className={cn(
+                utilityButtonClassName,
+                "border-l border-input text-foreground hover:bg-accent/50",
               )}
               variant="ghost"
               size="icon-sm"
@@ -110,7 +146,7 @@ export function VoiceControlsGroup(props: VoiceControlsGroupProps) {
           render={
             <Button
               className={cn(
-                "h-9 shrink-0 rounded-none border-0 border-l border-input px-3 text-xs font-medium shadow-none sm:h-6 sm:px-2 sm:text-[11px]",
+                "hidden h-9 shrink-0 rounded-none border-0 border-l border-input px-3 text-xs font-medium shadow-none sm:inline-flex sm:h-6 sm:px-2 sm:text-[11px]",
                 "text-foreground hover:bg-accent/50",
               )}
               variant="ghost"
@@ -132,7 +168,7 @@ export function VoiceControlsGroup(props: VoiceControlsGroupProps) {
             <Button
               className={cn(
                 utilityButtonClassName,
-                "border-l border-input text-foreground hover:bg-accent/50",
+                "hidden border-l border-input text-foreground hover:bg-accent/50 sm:inline-flex",
               )}
               variant="ghost"
               size="icon-sm"

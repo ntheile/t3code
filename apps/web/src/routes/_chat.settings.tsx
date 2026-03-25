@@ -18,6 +18,7 @@ import {
   patchCustomModels,
   useAppSettings,
   type VoicePlaybackRate,
+  type VoiceSilenceDuration,
 } from "../appSettings";
 import { resolveAndPersistPreferredEditor } from "../editorPreferences";
 import { isElectron } from "../env";
@@ -108,6 +109,13 @@ const VOICE_PLAYBACK_RATE_LABELS: Record<VoicePlaybackRate, string> = {
   "1.5": "1.5x",
   "1.75": "1.75x",
   "2.0": "2.0x",
+};
+const VOICE_SILENCE_DURATION_LABELS: Record<VoiceSilenceDuration, string> = {
+  "1.5": "1.5s",
+  "2.0": "2.0s",
+  "2.5": "2.5s",
+  "3.0": "3.0s",
+  "4.0": "4.0s",
 };
 
 function SettingsRouteView() {
@@ -1274,6 +1282,26 @@ function SettingsRouteView() {
                   />
                 </div>
 
+                <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
+                  <div>
+                    <p className="text-sm font-medium text-foreground">Wake phrase mode</p>
+                    <p className="text-xs text-muted-foreground">
+                      Lets the chat listen for “Hey T3” and start voice input without pressing the
+                      keyboard.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={settings.voiceWakePhraseEnabled}
+                    onCheckedChange={(checked) =>
+                      updateSettings({
+                        voiceWakePhraseEnabled: Boolean(checked),
+                      })
+                    }
+                    aria-label="Enable Hey T3 wake phrase mode"
+                    disabled={!settings.voiceEnabled}
+                  />
+                </div>
+
                 <div className="rounded-lg border border-border bg-background px-3 py-3">
                   <div className="mb-2">
                     <p className="text-sm font-medium text-foreground">Voice input model</p>
@@ -1367,6 +1395,46 @@ function SettingsRouteView() {
                   </Select>
                 </div>
 
+                <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
+                  <div>
+                    <p className="text-sm font-medium text-foreground">Voice silence timeout</p>
+                    <p className="text-xs text-muted-foreground">
+                      How long T3 waits after you stop speaking before it ends listening and sends
+                      the transcript.
+                    </p>
+                  </div>
+                  <Select
+                    value={settings.voiceSilenceDuration}
+                    onValueChange={(value) => {
+                      if (
+                        value !== "1.5" &&
+                        value !== "2.0" &&
+                        value !== "2.5" &&
+                        value !== "3.0" &&
+                        value !== "4.0"
+                      ) {
+                        return;
+                      }
+                      updateSettings({
+                        voiceSilenceDuration: value,
+                      });
+                    }}
+                  >
+                    <SelectTrigger className="w-28" aria-label="Voice silence timeout">
+                      <SelectValue>
+                        {VOICE_SILENCE_DURATION_LABELS[settings.voiceSilenceDuration]}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectPopup align="end">
+                      <SelectItem value="1.5">{VOICE_SILENCE_DURATION_LABELS["1.5"]}</SelectItem>
+                      <SelectItem value="2.0">{VOICE_SILENCE_DURATION_LABELS["2.0"]}</SelectItem>
+                      <SelectItem value="2.5">{VOICE_SILENCE_DURATION_LABELS["2.5"]}</SelectItem>
+                      <SelectItem value="3.0">{VOICE_SILENCE_DURATION_LABELS["3.0"]}</SelectItem>
+                      <SelectItem value="4.0">{VOICE_SILENCE_DURATION_LABELS["4.0"]}</SelectItem>
+                    </SelectPopup>
+                  </Select>
+                </div>
+
                 <div className="rounded-lg border border-border bg-background px-3 py-3">
                   <div className="mb-2">
                     <p className="text-sm font-medium text-foreground">Voice instructions</p>
@@ -1400,10 +1468,12 @@ function SettingsRouteView() {
                 </div>
 
                 {settings.voiceEnabled !== defaults.voiceEnabled ||
+                settings.voiceWakePhraseEnabled !== defaults.voiceWakePhraseEnabled ||
                 settings.voiceAutoSpeakReplies !== defaults.voiceAutoSpeakReplies ||
                 settings.voiceModel !== defaults.voiceModel ||
                 settings.voiceName !== defaults.voiceName ||
                 settings.voicePlaybackRate !== defaults.voicePlaybackRate ||
+                settings.voiceSilenceDuration !== defaults.voiceSilenceDuration ||
                 settings.voiceInstructions !== defaults.voiceInstructions ? (
                   <div className="flex justify-end">
                     <Button
@@ -1412,10 +1482,12 @@ function SettingsRouteView() {
                       onClick={() =>
                         updateSettings({
                           voiceEnabled: defaults.voiceEnabled,
+                          voiceWakePhraseEnabled: defaults.voiceWakePhraseEnabled,
                           voiceAutoSpeakReplies: defaults.voiceAutoSpeakReplies,
                           voiceModel: defaults.voiceModel,
                           voiceName: defaults.voiceName,
                           voicePlaybackRate: defaults.voicePlaybackRate,
+                          voiceSilenceDuration: defaults.voiceSilenceDuration,
                           voiceInstructions: defaults.voiceInstructions,
                         })
                       }

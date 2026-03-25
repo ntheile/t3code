@@ -151,6 +151,7 @@ import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { MessagesTimeline } from "./chat/MessagesTimeline";
 import { ChatHeader } from "./chat/ChatHeader";
 import { VoiceControlsGroup } from "./chat/VoiceControlsGroup";
+import { useThreadVoiceReadback } from "./chat/ThreadVoiceReadbackController";
 import {
   resolveProjectHeaderClassName,
   resolveProjectHeaderStyle,
@@ -172,8 +173,6 @@ import { ProviderHealthBanner } from "./chat/ProviderHealthBanner";
 import { ThreadErrorBanner } from "./chat/ThreadErrorBanner";
 import {
   buildExpiredTerminalContextToastCopy,
-  extractAssistantNarrationChunks,
-  resolveLatestNarratableAssistantMessage,
   buildLocalDraftThread,
   buildTemporaryWorktreeBranchName,
   cloneComposerImageForRetry,
@@ -188,8 +187,8 @@ import {
   SendPhase,
 } from "./ChatView.logic";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
-import { useRealtimeSpeechOutput } from "../voice/useRealtimeSpeechOutput";
 import { useVoiceSession } from "../voice/useVoiceSession";
+import { useWakePhraseDetection } from "../voice/useWakePhraseDetection";
 
 const ATTACHMENT_PREVIEW_HANDOFF_TTL_MS = 5000;
 const IMAGE_SIZE_LIMIT_LABEL = `${Math.round(PROVIDER_SEND_TURN_MAX_IMAGE_BYTES / (1024 * 1024))}MB`;
@@ -214,6 +213,18 @@ function formatOutgoingPrompt(params: {
 const COMPOSER_PATH_QUERY_DEBOUNCE_MS = 120;
 const SCRIPT_TERMINAL_COLS = 120;
 const SCRIPT_TERMINAL_ROWS = 30;
+const PUSH_TO_TALK_SPACE_CODE = "Space";
+const PUSH_TO_TALK_RELEASE_PADDING_MS = 500;
+
+function isEditableEventTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+  if (target.isContentEditable) {
+    return true;
+  }
+  return Boolean(target.closest("input, textarea, select, [contenteditable='true']"));
+}
 
 const extendReplacementRangeForTrailingSpace = (
   text: string,
@@ -352,14 +363,11 @@ export default function ChatView({ threadId }: ChatViewProps) {
   // When set, the thread-change reset effect will open the sidebar instead of closing it.
   // Used by "Implement in a new thread" to carry the sidebar-open intent across navigation.
   const planSidebarOpenOnNextThreadRef = useRef(false);
-  const narratedAssistantMessageRef = useRef<{
-    messageId: MessageId | null;
-    spokenChunkCount: number;
-  }>({
-    messageId: null,
-    spokenChunkCount: 0,
-  });
   const [nowTick, setNowTick] = useState(() => Date.now());
+  const pushToTalkActiveRef = useRef(false);
+  const pushToTalkStopTimeoutRef = useRef<number | null>(null);
+  const pushToTalkResumeSpeechRef = useRef(false);
+  const interruptedReadbackRef = useRef(false);
   const [terminalFocusRequestId, setTerminalFocusRequestId] = useState(0);
   const [composerHighlightedItemId, setComposerHighlightedItemId] = useState<string | null>(null);
   const [pullRequestDialogState, setPullRequestDialogState] =
@@ -2410,7 +2418,10 @@ export default function ChatView({ threadId }: ChatViewProps) {
     [activeThread, isConnecting, isRevertingCheckpoint, isSendBusy, phase, setThreadError],
   );
 
-  const onSend = async (e?: { preventDefault: () => void }) => {
+  const onSend = async (
+    e?: { preventDefault: () => void },
+    options?: { promptOverride?: string },
+  ) => {
     e?.preventDefault();
     const api = readNativeApi();
     if (!api || !activeThread || isSendBusy || isConnecting || sendInFlightRef.current) return;
@@ -2418,7 +2429,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       onAdvanceActivePendingUserInput();
       return;
     }
-    const promptForSend = promptRef.current;
+    const promptForSend = options?.promptOverride ?? promptRef.current;
     const {
       trimmedPrompt: trimmed,
       sendableTerminalContexts: sendableComposerTerminalContexts,
@@ -3189,92 +3200,51 @@ export default function ChatView({ threadId }: ChatViewProps) {
     syncServerReadModel,
   ]);
 
+  const {
+    pauseSpeaking,
+    resumeSpeaking,
+    stopSpeaking,
+    skipCurrentSentence,
+    registerListeningCallbacks,
+  } = useThreadVoiceReadback();
+
   const onVoiceFinalTranscript = useCallback(
     async (text: string) => {
       const normalized = text.trim();
       if (!normalized) {
         return;
       }
+      interruptedReadbackRef.current = false;
+      stopSpeaking();
       promptRef.current = normalized;
       setPrompt(normalized);
       setComposerCursor(collapseExpandedComposerCursor(normalized, normalized.length));
       setComposerTrigger(detectComposerTrigger(normalized, normalized.length));
-      await onSendRef.current();
+      await onSendRef.current(undefined, { promptOverride: normalized });
     },
-    [setPrompt],
+    [setPrompt, stopSpeaking],
   );
 
   const voiceSession = useVoiceSession({
     threadId,
     enabled: settings.voiceEnabled,
+    wakePhraseEnabled: settings.voiceWakePhraseEnabled,
     liveRepliesEnabled: false,
     model: settings.voiceModel.trim() || null,
     voice: settings.voiceName.trim() || null,
+    silenceDurationMs: Math.round(Number(settings.voiceSilenceDuration) * 1000),
     onFinalTranscript: onVoiceFinalTranscript,
   });
-  const {
-    stopSpeaking,
-    skipCurrentSentence,
-    speakText: speakAssistantText,
-  } = useRealtimeSpeechOutput({
-    threadId,
-    enabled: settings.voiceEnabled && settings.voiceAutoSpeakReplies,
-    model: settings.voiceModel.trim() || null,
-    voice: settings.voiceName.trim() || null,
-    instructions: settings.voiceInstructions.trim() || null,
-    playbackRate: Number(settings.voicePlaybackRate),
-    onUtteranceStart: voiceSession.pauseListening,
-    onUtteranceEnd: voiceSession.resumeListening,
-  });
-
-  const latestNarratableAssistantMessage = useMemo(() => {
-    return resolveLatestNarratableAssistantMessage({
-      messages: serverMessages,
-      preferredAssistantMessageId: activeLatestTurn?.assistantMessageId ?? null,
-      preferTurnCompletion: Boolean(activeLatestTurn?.assistantMessageId),
-    });
-  }, [activeLatestTurn?.assistantMessageId, serverMessages]);
-  const latestNarratableAssistantMessageId = latestNarratableAssistantMessage?.id ?? null;
-  const latestNarratableAssistantText = latestNarratableAssistantMessage?.text ?? "";
-  const latestNarratableAssistantStreaming = latestNarratableAssistantMessage?.streaming ?? false;
 
   useEffect(() => {
-    const assistantMessage = latestNarratableAssistantMessage;
-    if (!assistantMessage || !settings.voiceAutoSpeakReplies) {
-      return;
-    }
-
-    if (narratedAssistantMessageRef.current.messageId !== assistantMessage.id) {
-      narratedAssistantMessageRef.current = {
-        messageId: assistantMessage.id,
-        spokenChunkCount: 0,
-      };
-    }
-
-    const { chunks, nextSpokenChunkCount } = extractAssistantNarrationChunks({
-      text: assistantMessage.text,
-      spokenChunkCount: narratedAssistantMessageRef.current.spokenChunkCount,
-      isComplete: !assistantMessage.streaming,
+    registerListeningCallbacks({
+      pauseListening: voiceSession.pauseListening,
+      resumeListening: voiceSession.resumeListening,
     });
-    if (chunks.length === 0) {
-      return;
-    }
-
-    narratedAssistantMessageRef.current = {
-      messageId: assistantMessage.id,
-      spokenChunkCount: nextSpokenChunkCount,
+    return () => {
+      registerListeningCallbacks(null);
     };
-    for (const chunk of chunks) {
-      speakAssistantText(chunk);
-    }
-  }, [
-    latestNarratableAssistantMessage,
-    latestNarratableAssistantMessageId,
-    latestNarratableAssistantStreaming,
-    latestNarratableAssistantText,
-    settings.voiceAutoSpeakReplies,
-    speakAssistantText,
-  ]);
+  }, [registerListeningCallbacks, voiceSession.pauseListening, voiceSession.resumeListening]);
 
   const startVoiceConversation = useCallback(() => {
     if (!settings.voiceAutoSpeakReplies) {
@@ -3282,14 +3252,118 @@ export default function ChatView({ threadId }: ChatViewProps) {
         voiceAutoSpeakReplies: true,
       });
     }
-    stopSpeaking();
+    interruptedReadbackRef.current = pauseSpeaking();
     void voiceSession.startListening();
-  }, [settings.voiceAutoSpeakReplies, stopSpeaking, updateSettings, voiceSession]);
+  }, [pauseSpeaking, settings.voiceAutoSpeakReplies, updateSettings, voiceSession]);
 
   const stopVoiceConversation = useCallback(() => {
-    stopSpeaking();
     voiceSession.stopListening();
-  }, [stopSpeaking, voiceSession]);
+    if (interruptedReadbackRef.current) {
+      interruptedReadbackRef.current = false;
+      resumeSpeaking();
+    }
+  }, [resumeSpeaking, voiceSession]);
+
+  const wakePhraseDetector = useWakePhraseDetection({
+    enabled:
+      settings.voiceEnabled &&
+      settings.voiceWakePhraseEnabled &&
+      !(
+        isComposerApprovalState ||
+        pendingUserInputs.length > 0 ||
+        activePendingProgress != null ||
+        isConnecting ||
+        isSendBusy ||
+        phase === "running"
+      ) &&
+      voiceSession.phase !== "connecting" &&
+      voiceSession.phase !== "listening" &&
+      !pushToTalkActiveRef.current,
+    onWakePhrase: () => {
+      interruptedReadbackRef.current = pauseSpeaking();
+      void voiceSession.startWakePhraseListening();
+    },
+  });
+
+  const startPushToTalkVoiceConversation = useCallback(() => {
+    pushToTalkResumeSpeechRef.current = pauseSpeaking();
+    void voiceSession.startListening();
+  }, [pauseSpeaking, voiceSession]);
+
+  const stopPushToTalkVoiceConversation = useCallback(() => {
+    voiceSession.stopListening();
+    if (pushToTalkResumeSpeechRef.current) {
+      pushToTalkResumeSpeechRef.current = false;
+      resumeSpeaking();
+    }
+  }, [resumeSpeaking, voiceSession]);
+
+  useEffect(() => {
+    const clearScheduledPushToTalkStop = () => {
+      if (pushToTalkStopTimeoutRef.current !== null) {
+        window.clearTimeout(pushToTalkStopTimeoutRef.current);
+        pushToTalkStopTimeoutRef.current = null;
+      }
+    };
+
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.defaultPrevented) {
+        return;
+      }
+      if (event.code !== PUSH_TO_TALK_SPACE_CODE || event.repeat) {
+        return;
+      }
+      if (isEditableEventTarget(event.target)) {
+        return;
+      }
+      if (!settings.voiceEnabled || voiceSession.phase === "connecting") {
+        return;
+      }
+      event.preventDefault();
+      clearScheduledPushToTalkStop();
+      pushToTalkActiveRef.current = true;
+      startPushToTalkVoiceConversation();
+    };
+
+    const stopPushToTalk = () => {
+      clearScheduledPushToTalkStop();
+      if (!pushToTalkActiveRef.current) {
+        return;
+      }
+      pushToTalkActiveRef.current = false;
+      stopPushToTalkVoiceConversation();
+    };
+
+    const onKeyUp = (event: globalThis.KeyboardEvent) => {
+      if (event.code !== PUSH_TO_TALK_SPACE_CODE) {
+        return;
+      }
+      if (!pushToTalkActiveRef.current) {
+        return;
+      }
+      event.preventDefault();
+      clearScheduledPushToTalkStop();
+      pushToTalkStopTimeoutRef.current = window.setTimeout(() => {
+        pushToTalkStopTimeoutRef.current = null;
+        stopPushToTalk();
+      }, PUSH_TO_TALK_RELEASE_PADDING_MS);
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", stopPushToTalk);
+    return () => {
+      clearScheduledPushToTalkStop();
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", stopPushToTalk);
+    };
+  }, [
+    settings.voiceEnabled,
+    startPushToTalkVoiceConversation,
+    stopPushToTalkVoiceConversation,
+    voiceSession.phase,
+  ]);
 
   const cycleVoicePlaybackRate = useCallback(() => {
     const playbackRates: VoicePlaybackRate[] = ["0.75", "1.0", "1.25", "1.5", "1.75", "2.0"];
@@ -3982,7 +4056,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
                     <div
                       data-chat-composer-footer="true"
                       className={cn(
-                        "flex items-center justify-between px-2.5 pb-2.5 sm:px-3 sm:pb-3",
+                        "flex items-center justify-between pl-2.5 pr-3.5 pb-2.5 sm:px-3 sm:pb-3",
                         isComposerFooterCompact
                           ? "gap-1.5"
                           : "flex-wrap gap-2 sm:flex-nowrap sm:gap-0",
@@ -4030,6 +4104,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
                             phase === "running" ||
                             !settings.voiceEnabled
                           }
+                          wakePhraseEnabled={settings.voiceWakePhraseEnabled}
+                          wakePhraseSupported={wakePhraseDetector.isSupported}
                           speakerEnabled={settings.voiceAutoSpeakReplies}
                           playbackRateLabel={`${settings.voicePlaybackRate}x`}
                           speakerDisabled={!settings.voiceEnabled || isConnecting}
@@ -4040,6 +4116,11 @@ export default function ChatView({ threadId }: ChatViewProps) {
                           onToggleSpeaker={() => {
                             updateSettings({
                               voiceAutoSpeakReplies: !settings.voiceAutoSpeakReplies,
+                            });
+                          }}
+                          onToggleWakePhrase={() => {
+                            updateSettings({
+                              voiceWakePhraseEnabled: !settings.voiceWakePhraseEnabled,
                             });
                           }}
                           onCyclePlaybackRate={cycleVoicePlaybackRate}
@@ -4067,6 +4148,29 @@ export default function ChatView({ threadId }: ChatViewProps) {
                             activePlan={Boolean(
                               activePlan || sidebarProposedPlan || planSidebarOpen,
                             )}
+                            extraMenuContent={
+                              settings.voiceEnabled ? (
+                                <>
+                                  <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">
+                                    Voice
+                                  </div>
+                                  <MenuItem
+                                    disabled={!settings.voiceEnabled}
+                                    onClick={cycleVoicePlaybackRate}
+                                  >
+                                    Speed: {settings.voicePlaybackRate}x
+                                  </MenuItem>
+                                  <MenuItem
+                                    disabled={
+                                      !settings.voiceEnabled || !settings.voiceAutoSpeakReplies
+                                    }
+                                    onClick={skipCurrentSentence}
+                                  >
+                                    Skip sentence
+                                  </MenuItem>
+                                </>
+                              ) : null
+                            }
                             interactionMode={interactionMode}
                             planSidebarOpen={planSidebarOpen}
                             runtimeMode={runtimeMode}
@@ -4172,7 +4276,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
                       {/* Right side: send / stop button */}
                       <div
                         data-chat-composer-actions="right"
-                        className="flex shrink-0 items-center gap-2"
+                        className="flex shrink-0 items-center gap-2 pr-0.5 sm:pr-0"
                       >
                         {isPreparingWorktree ? (
                           <span className="text-muted-foreground/70 text-xs">

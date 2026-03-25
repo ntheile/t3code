@@ -3,21 +3,36 @@ import { OpenAIRealtimeWebRTC, RealtimeAgent, RealtimeSession } from "@openai/ag
 import { useCallback, useEffect, useReducer, useRef } from "react";
 
 import { ensureNativeApi } from "../nativeApi";
+import { useVoiceActivityMonitor } from "./useVoiceActivityMonitor";
+import { useVoiceCuePlayer } from "./useVoiceCuePlayer";
 import { registerVoiceSession, releaseVoiceSession } from "./voiceSessionRegistry";
 import { voiceReducer } from "./voiceReducer";
 import { DEFAULT_VOICE_UI_STATE } from "./types";
 
+const STOP_LISTENING_FINALIZATION_GRACE_MS = 1500;
+const SILENCE_FINALIZATION_SETTLE_MS = 650;
 interface UseVoiceSessionInput {
   readonly threadId: ThreadId;
   readonly enabled: boolean;
+  readonly wakePhraseEnabled?: boolean;
   readonly liveRepliesEnabled: boolean;
   readonly model: string | null;
   readonly voice: string | null;
+  readonly silenceDurationMs?: number;
   readonly onFinalTranscript: (text: string) => void | Promise<void>;
 }
 
 export function useVoiceSession(input: UseVoiceSessionInput) {
-  const { threadId, enabled, liveRepliesEnabled, model, voice, onFinalTranscript } = input;
+  const {
+    threadId,
+    enabled,
+    wakePhraseEnabled = false,
+    liveRepliesEnabled,
+    model,
+    voice,
+    silenceDurationMs = 3000,
+    onFinalTranscript,
+  } = input;
   const [state, dispatch] = useReducer(voiceReducer, DEFAULT_VOICE_UI_STATE);
   const sessionRef = useRef<RealtimeSession | null>(null);
   const finalizedItemIdsRef = useRef(new Set<string>());
@@ -28,6 +43,43 @@ export function useVoiceSession(input: UseVoiceSessionInput) {
   const pendingLiveReplyRef = useRef(false);
   const queuedAssistantSpeechRef = useRef<string[]>([]);
   const keepHotMicRef = useRef(false);
+  const autoStopAfterNextTranscriptRef = useRef(false);
+  const pendingStopTimeoutRef = useRef<number | null>(null);
+  const silenceFallbackTimeoutRef = useRef<number | null>(null);
+  const silenceFallbackFinalizeTimeoutRef = useRef<number | null>(null);
+  const phaseRef = useRef(DEFAULT_VOICE_UI_STATE.phase);
+  const transcriptPreviewRef = useRef("");
+  const utteranceHandledRef = useRef(false);
+  const { playListeningStartCue, playListeningStopCue } = useVoiceCuePlayer();
+  const {
+    startMonitoring: startVoiceActivityMonitoring,
+    stopMonitoring: stopVoiceActivityMonitoring,
+  } = useVoiceActivityMonitor();
+
+  useEffect(() => {
+    phaseRef.current = state.phase;
+  }, [state.phase]);
+
+  const clearPendingStopTimeout = useCallback(() => {
+    if (pendingStopTimeoutRef.current !== null && typeof window !== "undefined") {
+      window.clearTimeout(pendingStopTimeoutRef.current);
+      pendingStopTimeoutRef.current = null;
+    }
+  }, []);
+
+  const clearSilenceFallbackTimeouts = useCallback(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    if (silenceFallbackTimeoutRef.current !== null) {
+      window.clearTimeout(silenceFallbackTimeoutRef.current);
+      silenceFallbackTimeoutRef.current = null;
+    }
+    if (silenceFallbackFinalizeTimeoutRef.current !== null) {
+      window.clearTimeout(silenceFallbackFinalizeTimeoutRef.current);
+      silenceFallbackFinalizeTimeoutRef.current = null;
+    }
+  }, []);
 
   const setSessionMuted = useCallback((muted: boolean) => {
     const session = sessionRef.current;
@@ -77,6 +129,9 @@ export function useVoiceSession(input: UseVoiceSessionInput) {
   }, []);
 
   const closeSession = useCallback(() => {
+    clearPendingStopTimeout();
+    clearSilenceFallbackTimeouts();
+    stopVoiceActivityMonitoring();
     keepHotMicRef.current = false;
     const session = sessionRef.current;
     if (!session) {
@@ -94,10 +149,108 @@ export function useVoiceSession(input: UseVoiceSessionInput) {
     pendingResponseCreateRef.current = false;
     pendingLiveReplyRef.current = false;
     queuedAssistantSpeechRef.current = [];
+    autoStopAfterNextTranscriptRef.current = false;
     releaseAudioElement();
     releaseVoiceSession(threadId);
     dispatch({ type: "reset" });
-  }, [releaseAudioElement, releaseMediaStream, threadId]);
+    transcriptPreviewRef.current = "";
+    utteranceHandledRef.current = false;
+  }, [
+    clearPendingStopTimeout,
+    clearSilenceFallbackTimeouts,
+    releaseAudioElement,
+    releaseMediaStream,
+    stopVoiceActivityMonitoring,
+    threadId,
+  ]);
+
+  const finishAutoStopAfterTranscript = useCallback(() => {
+    autoStopAfterNextTranscriptRef.current = false;
+    keepHotMicRef.current = false;
+    stopVoiceActivityMonitoring();
+    setSessionMuted(true);
+    dispatch({ type: "processing_started" });
+    playListeningStopCue();
+    if (typeof window !== "undefined") {
+      clearPendingStopTimeout();
+      pendingStopTimeoutRef.current = window.setTimeout(() => {
+        pendingStopTimeoutRef.current = null;
+        closeSession();
+      }, STOP_LISTENING_FINALIZATION_GRACE_MS);
+    } else {
+      closeSession();
+    }
+  }, [
+    clearPendingStopTimeout,
+    closeSession,
+    playListeningStopCue,
+    setSessionMuted,
+    stopVoiceActivityMonitoring,
+  ]);
+
+  const handleFinalTranscript = useCallback(
+    (transcript: string) => {
+      const normalizedTranscript = transcript.trim();
+      if (utteranceHandledRef.current) {
+        if (autoStopAfterNextTranscriptRef.current) {
+          clearSilenceFallbackTimeouts();
+          finishAutoStopAfterTranscript();
+        }
+        return;
+      }
+
+      utteranceHandledRef.current = true;
+      clearSilenceFallbackTimeouts();
+      stopVoiceActivityMonitoring();
+      dispatch({ type: "listening_started" });
+      if (!normalizedTranscript) {
+        if (autoStopAfterNextTranscriptRef.current) {
+          finishAutoStopAfterTranscript();
+        }
+        return;
+      }
+      if (!liveRepliesEnabled) {
+        dispatch({ type: "live_reply_interrupted" });
+      } else {
+        pendingLiveReplyRef.current = true;
+      }
+      void Promise.resolve(onFinalTranscript(normalizedTranscript))
+        .then(() => undefined)
+        .catch((error: unknown) => {
+          dispatch({
+            type: "error",
+            message: error instanceof Error ? error.message : "Failed to send voice transcript.",
+          });
+        });
+      if (autoStopAfterNextTranscriptRef.current) {
+        finishAutoStopAfterTranscript();
+      }
+    },
+    [
+      clearSilenceFallbackTimeouts,
+      finishAutoStopAfterTranscript,
+      liveRepliesEnabled,
+      onFinalTranscript,
+      stopVoiceActivityMonitoring,
+    ],
+  );
+
+  const scheduleSilenceFallback = useCallback(() => {
+    if (keepHotMicRef.current || typeof window === "undefined") {
+      return;
+    }
+    clearSilenceFallbackTimeouts();
+    if (utteranceHandledRef.current || phaseRef.current !== "listening") {
+      return;
+    }
+    silenceFallbackFinalizeTimeoutRef.current = window.setTimeout(() => {
+      silenceFallbackFinalizeTimeoutRef.current = null;
+      if (utteranceHandledRef.current) {
+        return;
+      }
+      handleFinalTranscript(transcriptPreviewRef.current);
+    }, SILENCE_FINALIZATION_SETTLE_MS);
+  }, [clearSilenceFallbackTimeouts, handleFinalTranscript]);
 
   const interruptLiveReply = useCallback(() => {
     const session = sessionRef.current;
@@ -225,7 +378,7 @@ export function useVoiceSession(input: UseVoiceSessionInput) {
                 createResponse: liveRepliesEnabled,
                 interruptResponse: true,
                 prefixPaddingMs: 300,
-                silenceDurationMs: 700,
+                silenceDurationMs,
                 threshold: 0.5,
               },
             },
@@ -284,6 +437,7 @@ export function useVoiceSession(input: UseVoiceSessionInput) {
 
         if (event.type === "conversation.item.input_audio_transcription.delta") {
           if (typeof event.delta === "string") {
+            transcriptPreviewRef.current = `${transcriptPreviewRef.current}${event.delta}`;
             dispatch({ type: "transcript_delta", delta: event.delta });
           }
           return;
@@ -294,25 +448,7 @@ export function useVoiceSession(input: UseVoiceSessionInput) {
             return;
           }
           finalizedItemIdsRef.current.add(event.item_id);
-          const transcript = event.transcript.trim();
-          dispatch({ type: "listening_started" });
-          if (!transcript) {
-            return;
-          }
-          if (!liveRepliesEnabled) {
-            dispatch({ type: "live_reply_interrupted" });
-          } else {
-            pendingLiveReplyRef.current = true;
-          }
-          void Promise.resolve(onFinalTranscript(transcript))
-            .then(() => undefined)
-            .catch((error: unknown) => {
-              dispatch({
-                type: "error",
-                message:
-                  error instanceof Error ? error.message : "Failed to send voice transcript.",
-              });
-            });
+          handleFinalTranscript(event.transcript);
           return;
         }
 
@@ -379,11 +515,12 @@ export function useVoiceSession(input: UseVoiceSessionInput) {
     createAssistantResponse,
     enabled,
     ensureAudioElement,
+    handleFinalTranscript,
     liveRepliesEnabled,
     model,
-    onFinalTranscript,
     releaseAudioElement,
     releaseMediaStream,
+    silenceDurationMs,
     threadId,
     voice,
     setSessionMuted,
@@ -408,23 +545,59 @@ export function useVoiceSession(input: UseVoiceSessionInput) {
     [connectSession, createAssistantResponse, enabled],
   );
 
+  const startListeningInternal = useCallback(
+    async (options?: { keepHotMic?: boolean }) => {
+      try {
+        clearPendingStopTimeout();
+        keepHotMicRef.current = options?.keepHotMic ?? true;
+        autoStopAfterNextTranscriptRef.current = !keepHotMicRef.current;
+        await ensureMicrophoneAccess();
+        const mediaStream = mediaStreamRef.current;
+        const session = await connectSession();
+        session.interrupt();
+        liveReplyResponseIdsRef.current.clear();
+        pendingResponseCreateRef.current = false;
+        pendingLiveReplyRef.current = false;
+        dispatch({ type: "live_reply_interrupted" });
+        finalizedItemIdsRef.current.clear();
+        utteranceHandledRef.current = false;
+        transcriptPreviewRef.current = "";
+        dispatch({ type: "listening_started" });
+        setSessionMuted(false);
+        playListeningStartCue();
+        if (!keepHotMicRef.current && mediaStream) {
+          void startVoiceActivityMonitoring(mediaStream, {
+            silenceDurationMs,
+            onSustainedSilence: scheduleSilenceFallback,
+          });
+        }
+      } catch {
+        return;
+      }
+    },
+    [
+      clearPendingStopTimeout,
+      connectSession,
+      ensureMicrophoneAccess,
+      playListeningStartCue,
+      scheduleSilenceFallback,
+      silenceDurationMs,
+      startVoiceActivityMonitoring,
+      setSessionMuted,
+    ],
+  );
+
   const startListening = useCallback(async () => {
-    try {
-      keepHotMicRef.current = true;
-      await ensureMicrophoneAccess();
-      const session = await connectSession();
-      session.interrupt();
-      liveReplyResponseIdsRef.current.clear();
-      pendingResponseCreateRef.current = false;
-      pendingLiveReplyRef.current = false;
-      dispatch({ type: "live_reply_interrupted" });
-      finalizedItemIdsRef.current.clear();
-      dispatch({ type: "listening_started" });
-      setSessionMuted(false);
-    } catch {
-      return;
-    }
-  }, [connectSession, ensureMicrophoneAccess, setSessionMuted]);
+    await startListeningInternal({
+      keepHotMic: true,
+    });
+  }, [startListeningInternal]);
+
+  const startWakePhraseListening = useCallback(async () => {
+    await startListeningInternal({
+      keepHotMic: false,
+    });
+  }, [startListeningInternal]);
 
   const pauseListening = useCallback(() => {
     const session = sessionRef.current;
@@ -445,13 +618,46 @@ export function useVoiceSession(input: UseVoiceSessionInput) {
   }, [setSessionMuted]);
 
   const stopListening = useCallback(() => {
+    const wasListening = phaseRef.current === "listening";
     keepHotMicRef.current = false;
-    closeSession();
-  }, [closeSession]);
+    autoStopAfterNextTranscriptRef.current = false;
+    clearSilenceFallbackTimeouts();
+    stopVoiceActivityMonitoring();
+    setSessionMuted(true);
+    dispatch({ type: "connect_succeeded" });
+    if (wasListening) {
+      playListeningStopCue();
+    }
+    clearPendingStopTimeout();
+    if (typeof window === "undefined") {
+      closeSession();
+      return;
+    }
+    pendingStopTimeoutRef.current = window.setTimeout(() => {
+      pendingStopTimeoutRef.current = null;
+      closeSession();
+    }, STOP_LISTENING_FINALIZATION_GRACE_MS);
+  }, [
+    clearPendingStopTimeout,
+    clearSilenceFallbackTimeouts,
+    closeSession,
+    playListeningStopCue,
+    setSessionMuted,
+    stopVoiceActivityMonitoring,
+  ]);
 
   useEffect(() => {
     void syncBrowserPermissionState();
   }, [syncBrowserPermissionState]);
+
+  useEffect(() => {
+    if (!enabled || !wakePhraseEnabled) {
+      return;
+    }
+    void ensureMicrophoneAccess()
+      .then(() => connectSession())
+      .catch(() => undefined);
+  }, [connectSession, enabled, ensureMicrophoneAccess, wakePhraseEnabled]);
 
   useEffect(() => closeSession, [closeSession]);
 
@@ -461,6 +667,7 @@ export function useVoiceSession(input: UseVoiceSessionInput) {
     interruptLiveReply,
     speakAssistantSummary,
     startListening,
+    startWakePhraseListening,
     pauseListening,
     resumeListening,
     stopListening,
