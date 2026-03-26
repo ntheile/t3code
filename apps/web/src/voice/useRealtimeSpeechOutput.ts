@@ -12,6 +12,8 @@ interface UseRealtimeSpeechOutputInput {
   readonly playbackRate: number;
   readonly onUtteranceStart?: () => void;
   readonly onUtteranceEnd?: () => void;
+  readonly onPlaybackProgress?: (state: { text: string; progress: number }) => void;
+  readonly onPlaybackIdle?: () => void;
 }
 
 export function useRealtimeSpeechOutput(input: UseRealtimeSpeechOutputInput) {
@@ -24,6 +26,8 @@ export function useRealtimeSpeechOutput(input: UseRealtimeSpeechOutputInput) {
     playbackRate,
     onUtteranceStart,
     onUtteranceEnd,
+    onPlaybackProgress,
+    onPlaybackIdle,
   } = input;
   const audioElementRef = useRef<HTMLAudioElement | null>(null);
   const queueRef = useRef<string[]>([]);
@@ -51,7 +55,10 @@ export function useRealtimeSpeechOutput(input: UseRealtimeSpeechOutputInput) {
   const playbackRateRef = useRef(playbackRate);
   const onUtteranceStartRef = useRef(onUtteranceStart);
   const onUtteranceEndRef = useRef(onUtteranceEnd);
+  const onPlaybackProgressRef = useRef(onPlaybackProgress);
+  const onPlaybackIdleRef = useRef(onPlaybackIdle);
   const processQueueRef = useRef<(() => Promise<void>) | null>(null);
+  const currentPlaybackTextRef = useRef("");
 
   useEffect(() => {
     enabledRef.current = enabled;
@@ -80,6 +87,30 @@ export function useRealtimeSpeechOutput(input: UseRealtimeSpeechOutputInput) {
   useEffect(() => {
     onUtteranceEndRef.current = onUtteranceEnd;
   }, [onUtteranceEnd]);
+
+  useEffect(() => {
+    onPlaybackProgressRef.current = onPlaybackProgress;
+  }, [onPlaybackProgress]);
+
+  useEffect(() => {
+    onPlaybackIdleRef.current = onPlaybackIdle;
+  }, [onPlaybackIdle]);
+
+  const emitPlaybackIdle = useCallback(() => {
+    currentPlaybackTextRef.current = "";
+    onPlaybackIdleRef.current?.();
+  }, []);
+
+  const emitPlaybackProgress = useCallback((progress: number) => {
+    const text = currentPlaybackTextRef.current.trim();
+    if (!text) {
+      return;
+    }
+    onPlaybackProgressRef.current?.({
+      text,
+      progress: Number.isFinite(progress) ? Math.max(0, Math.min(progress, 1)) : 0,
+    });
+  }, []);
 
   const applyPlaybackRate = useCallback((audioElement: HTMLAudioElement | null) => {
     if (!audioElement) {
@@ -191,10 +222,17 @@ export function useRealtimeSpeechOutput(input: UseRealtimeSpeechOutputInput) {
     prefetchAbortControllerRef.current?.abort();
     prefetchAbortControllerRef.current = null;
     finishUtterance();
+    emitPlaybackIdle();
     revokeObjectUrl();
     revokePrefetchedClip();
     releaseAudioElement();
-  }, [finishUtterance, releaseAudioElement, revokeObjectUrl, revokePrefetchedClip]);
+  }, [
+    emitPlaybackIdle,
+    finishUtterance,
+    releaseAudioElement,
+    revokeObjectUrl,
+    revokePrefetchedClip,
+  ]);
 
   const synthesizeClip = useCallback(
     async (text: string, signal: AbortSignal) => {
@@ -284,6 +322,7 @@ export function useRealtimeSpeechOutput(input: UseRealtimeSpeechOutputInput) {
       pendingQueueSkipCountRef.current = 0;
       currentSkipPendingRef.current = false;
       scheduleIdleFinish();
+      emitPlaybackIdle();
       return;
     }
 
@@ -322,6 +361,8 @@ export function useRealtimeSpeechOutput(input: UseRealtimeSpeechOutputInput) {
       }
 
       audioElement.src = objectUrlRef.current;
+      currentPlaybackTextRef.current = next;
+      emitPlaybackProgress(0);
       applyPlaybackRate(audioElement);
       if (pausedRef.current) {
         playingRef.current = false;
@@ -337,6 +378,7 @@ export function useRealtimeSpeechOutput(input: UseRealtimeSpeechOutputInput) {
       queueRef.current = [];
       pendingQueueSkipCountRef.current = 0;
       currentSkipPendingRef.current = false;
+      emitPlaybackIdle();
       revokeObjectUrl();
       revokePrefetchedClip();
       finishUtterance();
@@ -351,6 +393,8 @@ export function useRealtimeSpeechOutput(input: UseRealtimeSpeechOutputInput) {
     applyPlaybackRate,
     clearIdleFinishTimeout,
     ensureAudioElement,
+    emitPlaybackIdle,
+    emitPlaybackProgress,
     finishUtterance,
     maybePrefetchNextSentence,
     revokeObjectUrl,
@@ -408,6 +452,52 @@ export function useRealtimeSpeechOutput(input: UseRealtimeSpeechOutputInput) {
       }
     },
     [clearIdleFinishTimeout, maybePrefetchNextSentence, processQueue],
+  );
+
+  const replaceSpeechQueue = useCallback(
+    async (items: readonly string[]) => {
+      const normalizedItems = items.map((item) => item.trim()).filter((item) => item.length > 0);
+      clearIdleFinishTimeout();
+      clearPlaybackWatchdog();
+      pendingQueueSkipCountRef.current = 0;
+      currentSkipPendingRef.current = false;
+      queueRef.current = [...normalizedItems];
+      prefetchAbortControllerRef.current?.abort();
+      prefetchAbortControllerRef.current = null;
+      revokePrefetchedClip();
+      abortControllerRef.current?.abort();
+      abortControllerRef.current = null;
+      synthInFlightRef.current = false;
+      const audioElement = audioElementRef.current;
+      if (audioElement) {
+        audioElement.pause();
+        audioElement.currentTime = 0;
+        audioElement.removeAttribute("src");
+        audioElement.load();
+      }
+      playingRef.current = false;
+      pausedRef.current = false;
+      revokeObjectUrl();
+      emitPlaybackIdle();
+      if (queueRef.current.length === 0) {
+        finishUtterance();
+        return;
+      }
+      if (!playbackBlockedRef.current) {
+        void maybePrefetchNextSentence();
+        await processQueue();
+      }
+    },
+    [
+      clearIdleFinishTimeout,
+      clearPlaybackWatchdog,
+      emitPlaybackIdle,
+      finishUtterance,
+      maybePrefetchNextSentence,
+      processQueue,
+      revokeObjectUrl,
+      revokePrefetchedClip,
+    ],
   );
 
   const advanceToNextSentence = useCallback(() => {
@@ -527,10 +617,12 @@ export function useRealtimeSpeechOutput(input: UseRealtimeSpeechOutputInput) {
     }
     revokeObjectUrl();
     revokePrefetchedClip();
+    emitPlaybackIdle();
     finishUtterance();
   }, [
     clearIdleFinishTimeout,
     clearPlaybackWatchdog,
+    emitPlaybackIdle,
     finishUtterance,
     revokeObjectUrl,
     revokePrefetchedClip,
@@ -567,6 +659,10 @@ export function useRealtimeSpeechOutput(input: UseRealtimeSpeechOutputInput) {
     }
     const syncPlaybackRate = () => {
       applyPlaybackRate(audioElement);
+      const duration = audioElement.duration;
+      const progress =
+        Number.isFinite(duration) && duration > 0 ? audioElement.currentTime / duration : 0;
+      emitPlaybackProgress(progress);
       if (playingRef.current) {
         schedulePlaybackWatchdog(audioElement);
       }
@@ -574,6 +670,7 @@ export function useRealtimeSpeechOutput(input: UseRealtimeSpeechOutputInput) {
     const handleEnded = () => {
       clearPlaybackWatchdog();
       playingRef.current = false;
+      emitPlaybackProgress(1);
       revokeObjectUrl();
       void maybePrefetchNextSentence();
       void processQueue();
@@ -583,6 +680,7 @@ export function useRealtimeSpeechOutput(input: UseRealtimeSpeechOutputInput) {
       playingRef.current = false;
       pausedRef.current = false;
       queueRef.current = [];
+      emitPlaybackIdle();
       revokeObjectUrl();
       revokePrefetchedClip();
       finishUtterance();
@@ -594,18 +692,22 @@ export function useRealtimeSpeechOutput(input: UseRealtimeSpeechOutputInput) {
     audioElement.addEventListener("loadedmetadata", syncPlaybackRate);
     audioElement.addEventListener("canplay", syncPlaybackRate);
     audioElement.addEventListener("play", handlePlay);
+    audioElement.addEventListener("timeupdate", syncPlaybackRate);
     audioElement.addEventListener("ended", handleEnded);
     audioElement.addEventListener("error", handleError);
     return () => {
       audioElement.removeEventListener("loadedmetadata", syncPlaybackRate);
       audioElement.removeEventListener("canplay", syncPlaybackRate);
       audioElement.removeEventListener("play", handlePlay);
+      audioElement.removeEventListener("timeupdate", syncPlaybackRate);
       audioElement.removeEventListener("ended", handleEnded);
       audioElement.removeEventListener("error", handleError);
     };
   }, [
     applyPlaybackRate,
     clearPlaybackWatchdog,
+    emitPlaybackIdle,
+    emitPlaybackProgress,
     ensureAudioElement,
     finishUtterance,
     maybePrefetchNextSentence,
@@ -625,6 +727,7 @@ export function useRealtimeSpeechOutput(input: UseRealtimeSpeechOutputInput) {
   useEffect(() => closeSession, [closeSession]);
 
   return {
+    replaceSpeechQueue,
     speakText,
     skipCurrentSentence,
     blockSpeaking,

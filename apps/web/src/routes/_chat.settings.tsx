@@ -1284,6 +1284,25 @@ function SettingsRouteView() {
 
                 <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
                   <div>
+                    <p className="text-sm font-medium text-foreground">Highlight spoken sentence</p>
+                    <p className="text-xs text-muted-foreground">
+                      Show the current sentence being read back above the composer.
+                    </p>
+                  </div>
+                  <Switch
+                    checked={settings.voiceHighlightSpokenSentence}
+                    onCheckedChange={(checked) =>
+                      updateSettings({
+                        voiceHighlightSpokenSentence: Boolean(checked),
+                      })
+                    }
+                    aria-label="Highlight spoken sentence"
+                    disabled={!settings.voiceEnabled || !settings.voiceAutoSpeakReplies}
+                  />
+                </div>
+
+                <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
+                  <div>
                     <p className="text-sm font-medium text-foreground">Wake phrase mode</p>
                     <p className="text-xs text-muted-foreground">
                       Lets the chat listen for “Hey T3” and start voice input without pressing the
@@ -1470,6 +1489,7 @@ function SettingsRouteView() {
                 {settings.voiceEnabled !== defaults.voiceEnabled ||
                 settings.voiceWakePhraseEnabled !== defaults.voiceWakePhraseEnabled ||
                 settings.voiceAutoSpeakReplies !== defaults.voiceAutoSpeakReplies ||
+                settings.voiceHighlightSpokenSentence !== defaults.voiceHighlightSpokenSentence ||
                 settings.voiceModel !== defaults.voiceModel ||
                 settings.voiceName !== defaults.voiceName ||
                 settings.voicePlaybackRate !== defaults.voicePlaybackRate ||
@@ -1484,6 +1504,7 @@ function SettingsRouteView() {
                           voiceEnabled: defaults.voiceEnabled,
                           voiceWakePhraseEnabled: defaults.voiceWakePhraseEnabled,
                           voiceAutoSpeakReplies: defaults.voiceAutoSpeakReplies,
+                          voiceHighlightSpokenSentence: defaults.voiceHighlightSpokenSentence,
                           voiceModel: defaults.voiceModel,
                           voiceName: defaults.voiceName,
                           voicePlaybackRate: defaults.voicePlaybackRate,

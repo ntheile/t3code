@@ -249,6 +249,38 @@ function splitSummarySentences(text: string): string[] {
     .filter((sentence) => sentence.length > 0);
 }
 
+export function extractAssistantNarrationParagraphs(text: string): string[] {
+  return text
+    .split(/\n\s*\n/u)
+    .map((paragraph) => collapseSummaryWhitespace(stripSummaryMarkdown(paragraph)))
+    .filter((paragraph) => paragraph.length > 0);
+}
+
+export function extractAssistantNarrationSentences(text: string): string[] {
+  const normalized = collapseSummaryWhitespace(stripSummaryMarkdown(text));
+  if (!normalized) {
+    return [];
+  }
+  const sentences = splitSummarySentences(normalized);
+  return sentences.length > 0 ? sentences : [normalized];
+}
+
+export function resolveNarrationParagraphForSentence(
+  fullText: string,
+  sentence: string | null | undefined,
+): string | null {
+  const normalizedSentence = collapseSummaryWhitespace(stripSummaryMarkdown(sentence ?? ""));
+  if (!normalizedSentence) {
+    return null;
+  }
+  const paragraphs = extractAssistantNarrationParagraphs(fullText);
+  return (
+    paragraphs.find((paragraph) => paragraph.includes(normalizedSentence)) ??
+    paragraphs.find((paragraph) => normalizedSentence.includes(paragraph)) ??
+    null
+  );
+}
+
 function extractSummaryBullets(text: string, maxItems: number): string[] {
   const bullets = text
     .split("\n")

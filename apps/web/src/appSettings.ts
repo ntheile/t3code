@@ -62,6 +62,7 @@ export const AppSettingsSchema = Schema.Struct({
   voiceWakePhraseEnabled: Schema.Boolean.pipe(withDefaults(() => false)),
   voiceLiveRepliesEnabled: Schema.Boolean.pipe(withDefaults(() => false)),
   voiceAutoSpeakReplies: Schema.Boolean.pipe(withDefaults(() => true)),
+  voiceHighlightSpokenSentence: Schema.Boolean.pipe(withDefaults(() => true)),
   voiceModel: Schema.String.check(Schema.isMaxLength(256)).pipe(withDefaults(() => "")),
   voiceName: Schema.String.check(Schema.isMaxLength(256)).pipe(withDefaults(() => "")),
   voicePlaybackRate: VoicePlaybackRate.pipe(withDefaults(() => "1.5" as const)),

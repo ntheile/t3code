@@ -3226,6 +3226,14 @@ export default function ChatView({ threadId }: ChatViewProps) {
   ]);
 
   const {
+    activeSpokenMessageId,
+    activeSpokenSentence,
+    activeSpokenParagraph,
+    activeSpokenParagraphIndex,
+    pendingPlayMessageId,
+    pendingPlayParagraph,
+    pendingPlayParagraphIndex,
+    playFromParagraph,
     blockSpeaking,
     unblockSpeaking,
     stopSpeaking,
@@ -3894,6 +3902,22 @@ export default function ChatView({ threadId }: ChatViewProps) {
                 resolvedTheme={resolvedTheme}
                 timestampFormat={timestampFormat}
                 workspaceRoot={activeProject?.cwd ?? undefined}
+                activeSpokenMessageId={activeSpokenMessageId}
+                activeSpokenSentence={
+                  settings.voiceHighlightSpokenSentence ? activeSpokenSentence : null
+                }
+                activeSpokenParagraph={
+                  settings.voiceHighlightSpokenSentence ? activeSpokenParagraph : null
+                }
+                activeSpokenParagraphIndex={
+                  settings.voiceHighlightSpokenSentence ? activeSpokenParagraphIndex : null
+                }
+                pendingPlayMessageId={pendingPlayMessageId}
+                pendingPlayParagraph={pendingPlayParagraph}
+                pendingPlayParagraphIndex={pendingPlayParagraphIndex}
+                onPlayFromParagraph={(messageId, fullText, paragraphIndex, paragraphText) => {
+                  void playFromParagraph(messageId, fullText, paragraphIndex, paragraphText);
+                }}
               />
             </div>
 
