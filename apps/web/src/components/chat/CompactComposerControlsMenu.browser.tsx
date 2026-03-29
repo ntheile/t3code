@@ -66,6 +66,7 @@ async function mountMenu(props?: {
   );
 
   return {
+    onPromptChange,
     cleanup: async () => {
       await screen.unmount();
       host.remove();
@@ -159,7 +160,7 @@ describe("CompactComposerControlsMenu", () => {
     }
   });
 
-  it("shows prompt-controlled Ultrathink messaging with disabled effort controls", async () => {
+  it("shows prompt-controlled Ultrathink state with selectable effort controls", async () => {
     const mounted = await mountMenu({
       model: "claude-opus-4-6",
       prompt: "Ultrathink:\nInvestigate this",
@@ -176,8 +177,36 @@ describe("CompactComposerControlsMenu", () => {
       await vi.waitFor(() => {
         const text = document.body.textContent ?? "";
         expect(text).toContain("Effort");
-        expect(text).toContain("Remove Ultrathink from the prompt to change effort.");
-        expect(text).not.toContain("Fallback Effort");
+        expect(text).not.toContain("ultrathink");
+      });
+
+      await page.getByRole("menuitemradio", { name: "Low" }).click();
+
+      expect(mounted.onPromptChange).toHaveBeenCalledWith("Investigate this");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("warns when ultrathink appears in prompt body text", async () => {
+    const mounted = await mountMenu({
+      model: "claude-opus-4-6",
+      prompt: "Ultrathink:\nplease ultrathink about this problem",
+      modelOptions: {
+        claudeAgent: {
+          effort: "high",
+        },
+      },
+    });
+
+    try {
+      await page.getByLabelText("More composer controls").click();
+
+      await vi.waitFor(() => {
+        const text = document.body.textContent ?? "";
+        expect(text).toContain(
+          'Your prompt contains "ultrathink" in the text. Remove it to change effort.',
+        );
       });
     } finally {
       await mounted.cleanup();

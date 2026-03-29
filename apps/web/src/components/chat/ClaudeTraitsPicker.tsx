@@ -44,6 +44,14 @@ const CLAUDE_EFFORT_LABELS: Record<ClaudeCodeEffort, string> = {
 
 const ULTRATHINK_PROMPT_PREFIX = "Ultrathink:\n";
 
+function stripClaudeUltrathinkPromptPrefix(text: string): string {
+  return text.replace(/^\s*Ultrathink:\s*\n?/i, "");
+}
+
+function hasClaudeUltrathinkKeywordOutsidePrefix(text: string): boolean {
+  return /\bultrathink\b/i.test(stripClaudeUltrathinkPromptPrefix(text));
+}
+
 function getSelectedClaudeTraits(
   model: string | null | undefined,
   prompt: string,
@@ -119,11 +127,12 @@ export const ClaudeTraitsMenuContent = memo(function ClaudeTraitsMenuContentImpl
     ultrathinkPromptControlled,
     supportsFastMode,
   } = getSelectedClaudeTraits(model, prompt, modelOptions);
+  const ultrathinkPromptWarning =
+    supportsClaudeUltrathinkKeyword(model) && hasClaudeUltrathinkKeywordOutsidePrefix(prompt);
   const defaultReasoningEffort = getDefaultReasoningEffort(PROVIDER);
 
   const handleEffortChange = useCallback(
     (value: ClaudeCodeEffort) => {
-      if (ultrathinkPromptControlled) return;
       if (!value) return;
       const nextEffort = options.find((option) => option === value);
       if (!nextEffort) return;
@@ -134,6 +143,9 @@ export const ClaudeTraitsMenuContent = memo(function ClaudeTraitsMenuContentImpl
             : applyClaudePromptEffortPrefix(prompt, "ultrathink");
         onPromptChange(nextPrompt);
         return;
+      }
+      if (ultrathinkPromptControlled) {
+        onPromptChange(stripClaudeUltrathinkPromptPrefix(prompt));
       }
       setProviderModelOptions(
         threadId,
@@ -167,14 +179,14 @@ export const ClaudeTraitsMenuContent = memo(function ClaudeTraitsMenuContentImpl
         <>
           <MenuGroup>
             <div className="px-2 pt-1.5 pb-1 font-medium text-muted-foreground text-xs">Effort</div>
-            {ultrathinkPromptControlled ? (
+            {ultrathinkPromptWarning ? (
               <div className="px-2 pb-1.5 text-muted-foreground/80 text-xs">
-                Remove Ultrathink from the prompt to change effort.
+                Your prompt contains "ultrathink" in the text. Remove it to change effort.
               </div>
             ) : null}
             <MenuRadioGroup value={effort} onValueChange={handleEffortChange}>
               {options.map((option) => (
-                <MenuRadioItem key={option} value={option} disabled={ultrathinkPromptControlled}>
+                <MenuRadioItem key={option} value={option}>
                   {CLAUDE_EFFORT_LABELS[option]}
                   {option === defaultReasoningEffort ? " (default)" : ""}
                 </MenuRadioItem>

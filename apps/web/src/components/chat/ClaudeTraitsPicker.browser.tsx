@@ -169,7 +169,7 @@ describe("ClaudeTraitsPicker", () => {
     }
   });
 
-  it("shows prompt-controlled Ultrathink state with disabled effort controls", async () => {
+  it("shows prompt-controlled Ultrathink state with selectable effort controls", async () => {
     const mounted = await mountPicker({
       effort: "high",
       model: "claude-opus-4-6",
@@ -187,8 +187,38 @@ describe("ClaudeTraitsPicker", () => {
       await vi.waitFor(() => {
         const text = document.body.textContent ?? "";
         expect(text).toContain("Effort");
-        expect(text).toContain("Remove Ultrathink from the prompt to change effort.");
-        expect(text).not.toContain("Fallback Effort");
+        expect(text).not.toContain("ultrathink");
+      });
+
+      await page.getByRole("menuitemradio", { name: "Low" }).click();
+
+      expect(mounted.onPromptChange).toHaveBeenCalledWith("Investigate this");
+      expect(useComposerDraftStore.getState().stickyModelOptions).toMatchObject({
+        claudeAgent: {
+          effort: "low",
+        },
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("warns when ultrathink appears in prompt body text", async () => {
+    const mounted = await mountPicker({
+      effort: "high",
+      model: "claude-opus-4-6",
+      prompt: "Ultrathink:\nplease ultrathink about this problem",
+      fastModeEnabled: false,
+    });
+
+    try {
+      await page.getByRole("button").click();
+
+      await vi.waitFor(() => {
+        const text = document.body.textContent ?? "";
+        expect(text).toContain(
+          'Your prompt contains "ultrathink" in the text. Remove it to change effort.',
+        );
       });
     } finally {
       await mounted.cleanup();
