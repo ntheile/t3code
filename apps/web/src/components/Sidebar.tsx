@@ -811,7 +811,7 @@ export default function Sidebar() {
         return;
       }
 
-      if (archived) {
+      if (archived && appSettings.confirmThreadArchive) {
         const confirmed = await api.dialogs.confirm(
           [`Archive thread "${thread.title}"?`, "You can restore it later from Archived."].join(
             "\n",
@@ -862,6 +862,7 @@ export default function Sidebar() {
       }
     },
     [
+      appSettings.confirmThreadArchive,
       appSettings.defaultThreadEnvMode,
       handleNewThread,
       navigate,
