@@ -3,13 +3,17 @@ import { describe, expect, it } from "vitest";
 
 import {
   AppSettingsSchema,
-  DEFAULT_VOICE_INSTRUCTIONS,
+  DEFAULT_SIDEBAR_PROJECT_SORT_ORDER,
+  DEFAULT_SIDEBAR_THREAD_SORT_ORDER,
   DEFAULT_TIMESTAMP_FORMAT,
+  DEFAULT_VOICE_INSTRUCTIONS,
   getAppModelOptions,
   getCustomModelOptionsByProvider,
   getCustomModelsByProvider,
   getCustomModelsForProvider,
   getDefaultCustomModelsForProvider,
+  getGitTextGenerationModelOptions,
+  getProviderStartOptions,
   MODEL_PROVIDER_SETTINGS,
   normalizeCustomModelSlugs,
   patchCustomModels,
@@ -111,6 +115,16 @@ describe("timestamp format defaults", () => {
   });
 });
 
+describe("sidebar sort defaults", () => {
+  it("defaults project sorting to manual", () => {
+    expect(DEFAULT_SIDEBAR_PROJECT_SORT_ORDER).toBe("manual");
+  });
+
+  it("defaults thread sorting to manual", () => {
+    expect(DEFAULT_SIDEBAR_THREAD_SORT_ORDER).toBe("manual");
+  });
+});
+
 describe("provider-specific custom models", () => {
   it("includes provider-specific custom slugs in non-codex model lists", () => {
     const claudeOptions = getAppModelOptions("claudeAgent", ["claude/custom-opus"]);
@@ -179,6 +193,15 @@ describe("provider-indexed custom model settings", () => {
     ).toBe(true);
   });
 
+  it("builds git text-generation model options across codex and claude", () => {
+    const gitModelOptions = getGitTextGenerationModelOptions(settings);
+
+    expect(gitModelOptions.some((option) => option.slug === "gpt-5.4")).toBe(true);
+    expect(gitModelOptions.some((option) => option.slug === "claude-sonnet-4-6")).toBe(true);
+    expect(gitModelOptions.some((option) => option.slug === "custom/codex-model")).toBe(true);
+    expect(gitModelOptions.some((option) => option.slug === "claude/custom-opus")).toBe(true);
+  });
+
   it("normalizes and deduplicates custom model options per provider", () => {
     const modelOptionsByProvider = getCustomModelOptionsByProvider({
       customCodexModels: ["  custom/codex-model ", "gpt-5.4", "custom/codex-model"],
@@ -210,11 +233,16 @@ describe("AppSettingsSchema", () => {
         }),
       ),
     ).toMatchObject({
+      claudeBinaryPath: "",
       codexBinaryPath: "/usr/local/bin/codex",
       codexHomePath: "",
       defaultThreadEnvMode: "local",
+      confirmThreadArchive: true,
       confirmThreadDelete: false,
+      diffWordWrap: false,
       enableAssistantStreaming: false,
+      sidebarProjectSortOrder: DEFAULT_SIDEBAR_PROJECT_SORT_ORDER,
+      sidebarThreadSortOrder: DEFAULT_SIDEBAR_THREAD_SORT_ORDER,
       voiceEnabled: true,
       voiceInputEnabled: true,
       voiceAutoSpeakReplies: true,
@@ -225,6 +253,36 @@ describe("AppSettingsSchema", () => {
       timestampFormat: DEFAULT_TIMESTAMP_FORMAT,
       customCodexModels: [],
       customClaudeModels: [],
+    });
+  });
+});
+
+describe("getProviderStartOptions", () => {
+  it("returns undefined when no provider install overrides are configured", () => {
+    expect(
+      getProviderStartOptions({
+        claudeBinaryPath: "",
+        codexBinaryPath: "",
+        codexHomePath: "",
+      }),
+    ).toBeUndefined();
+  });
+
+  it("returns both codex and claude overrides when configured", () => {
+    expect(
+      getProviderStartOptions({
+        claudeBinaryPath: "/usr/local/bin/claude",
+        codexBinaryPath: "/usr/local/bin/codex",
+        codexHomePath: "/tmp/codex-home",
+      }),
+    ).toEqual({
+      claudeAgent: {
+        binaryPath: "/usr/local/bin/claude",
+      },
+      codex: {
+        binaryPath: "/usr/local/bin/codex",
+        homePath: "/tmp/codex-home",
+      },
     });
   });
 });

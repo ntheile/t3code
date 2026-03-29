@@ -33,6 +33,8 @@ import Migration0018 from "./Migrations/018_ProjectionThreadProposedPlanImplemen
 import Migration0019 from "./Migrations/019_ProjectionTurnsSourceProposedPlan.ts";
 import Migration0020 from "./Migrations/020_ProjectColor.ts";
 import Migration0021 from "./Migrations/021_ProjectionThreadOrdering.ts";
+import Migration0022 from "./Migrations/022_ProjectionThreadsArchivedAt.ts";
+import Migration0023 from "./Migrations/023_ProjectionThreadsArchivedAtIndex.ts";
 import * as Effect from "effect/Effect";
 
 /**
@@ -67,6 +69,8 @@ const loader = Migrator.fromRecord({
   "19_ProjectionTurnsSourceProposedPlan": Migration0019,
   "20_ProjectColor": Migration0020,
   "21_ProjectionThreadOrdering": Migration0021,
+  "22_ProjectionThreadsArchivedAt": Migration0022,
+  "23_ProjectionThreadsArchivedAtIndex": Migration0023,
 });
 
 /**

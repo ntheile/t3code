@@ -149,30 +149,41 @@ export function createDevRunnerEnv({
     const publicServerHost =
       host && host !== "0.0.0.0" && host !== "::" && host !== "[::]" ? host : "localhost";
     const resolvedBaseDir = yield* resolveBaseDir(t3Home);
+    const isDesktopMode = mode === "dev:desktop";
 
     const output: NodeJS.ProcessEnv = {
       ...baseEnv,
-      T3CODE_PORT: String(serverPort),
       PORT: String(webPort),
       ELECTRON_RENDERER_PORT: String(webPort),
-      VITE_WS_URL: `ws://${publicServerHost}:${serverPort}`,
       VITE_DEV_SERVER_URL: devUrl?.toString() ?? `http://localhost:${webPort}`,
       T3CODE_HOME: resolvedBaseDir,
     };
 
-    if (host !== undefined) {
+    if (!isDesktopMode) {
+      output.T3CODE_PORT = String(serverPort);
+      output.VITE_WS_URL = `ws://${publicServerHost}:${serverPort}`;
+    } else {
+      delete output.T3CODE_PORT;
+      delete output.VITE_WS_URL;
+      delete output.T3CODE_AUTH_TOKEN;
+      delete output.T3CODE_MODE;
+      delete output.T3CODE_NO_BROWSER;
+      delete output.T3CODE_HOST;
+    }
+
+    if (!isDesktopMode && host !== undefined) {
       output.T3CODE_HOST = host;
     }
 
-    if (authToken !== undefined) {
+    if (!isDesktopMode && authToken !== undefined) {
       output.T3CODE_AUTH_TOKEN = authToken;
-    } else {
+    } else if (!isDesktopMode) {
       delete output.T3CODE_AUTH_TOKEN;
     }
 
-    if (noBrowser !== undefined) {
+    if (!isDesktopMode && noBrowser !== undefined) {
       output.T3CODE_NO_BROWSER = noBrowser ? "1" : "0";
-    } else {
+    } else if (!isDesktopMode) {
       delete output.T3CODE_NO_BROWSER;
     }
 
@@ -195,6 +206,10 @@ export function createDevRunnerEnv({
 
     if (mode === "dev:server" || mode === "dev:web") {
       output.T3CODE_MODE = "web";
+      delete output.T3CODE_DESKTOP_WS_URL;
+    }
+
+    if (isDesktopMode) {
       delete output.T3CODE_DESKTOP_WS_URL;
     }
 

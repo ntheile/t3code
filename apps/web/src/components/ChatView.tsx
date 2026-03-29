@@ -87,6 +87,7 @@ import { basenameOfPath } from "../vscode-icons";
 import { useTheme } from "../hooks/useTheme";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
+import { deriveLatestContextWindowSnapshot } from "../lib/contextWindow";
 import BranchToolbar from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import PlanSidebar from "./PlanSidebar";
@@ -124,6 +125,7 @@ import { readNativeApi } from "~/nativeApi";
 import {
   getCustomModelOptionsByProvider,
   getCustomModelsByProvider,
+  getProviderStartOptions,
   resolveAppModelSelection,
   type VoicePlaybackRate,
   useAppSettings,
@@ -148,6 +150,7 @@ import { shouldUseCompactComposerFooter } from "./composerFooterLayout";
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
 import { ComposerPromptEditor, type ComposerPromptEditorHandle } from "./ComposerPromptEditor";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
+import { ContextWindowMeter } from "./chat/ContextWindowMeter";
 import { MessagesTimeline } from "./chat/MessagesTimeline";
 import { ChatHeader } from "./chat/ChatHeader";
 import { VoiceControlsGroup } from "./chat/VoiceControlsGroup";
@@ -258,6 +261,12 @@ const terminalContextIdListsEqual = (
 
 interface ChatViewProps {
   threadId: ThreadId;
+}
+
+interface PendingPullRequestSetupRequest {
+  threadId: ThreadId;
+  worktreePath: string;
+  scriptId: string;
 }
 
 export default function ChatView({ threadId }: ChatViewProps) {
@@ -372,6 +381,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const [composerHighlightedItemId, setComposerHighlightedItemId] = useState<string | null>(null);
   const [pullRequestDialogState, setPullRequestDialogState] =
     useState<PullRequestDialogState | null>(null);
+  const [pendingPullRequestSetupRequest, setPendingPullRequestSetupRequest] =
+    useState<PendingPullRequestSetupRequest | null>(null);
   const [attachmentPreviewHandoffByMessageId, setAttachmentPreviewHandoffByMessageId] = useState<
     Record<string, string[]>
   >({});
@@ -509,6 +520,10 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const diffOpen = rawSearch.diff === "1";
   const activeThreadId = activeThread?.id ?? null;
   const activeLatestTurn = activeThread?.latestTurn ?? null;
+  const activeContextWindow = useMemo(
+    () => deriveLatestContextWindowSnapshot(activeThread?.activities ?? []),
+    [activeThread?.activities],
+  );
   const latestTurnSettled = isLatestTurnSettled(activeLatestTurn, activeThread?.session ?? null);
   const activeProject = projects.find((p) => p.id === activeThread?.projectId);
   const activeTargetId = resolveThreadTargetId({
@@ -549,14 +564,14 @@ export default function ChatView({ threadId }: ChatViewProps) {
             params: { threadId: storedDraftThread.threadId },
           });
         }
-        return;
+        return storedDraftThread.threadId;
       }
 
       const activeDraftThread = getDraftThread(threadId);
       if (!isServerThread && activeDraftThread?.projectId === activeProject.id) {
         setDraftThreadContext(threadId, input);
         setProjectDraftThreadId(activeProject.id, threadId, input);
-        return;
+        return threadId;
       }
 
       clearProjectDraftThreadId(activeProject.id);
@@ -571,6 +586,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
         to: "/$threadId",
         params: { threadId: nextThreadId },
       });
+      return nextThreadId;
     },
     [
       activeProject,
@@ -587,13 +603,24 @@ export default function ChatView({ threadId }: ChatViewProps) {
 
   const handlePreparedPullRequestThread = useCallback(
     async (input: { branch: string; worktreePath: string | null }) => {
-      await openOrReuseProjectDraftThread({
+      const targetThreadId = await openOrReuseProjectDraftThread({
         branch: input.branch,
         worktreePath: input.worktreePath,
         envMode: input.worktreePath ? "worktree" : "local",
       });
+      const setupScript =
+        input.worktreePath && activeProject ? setupProjectScript(activeProject.scripts) : null;
+      if (targetThreadId && input.worktreePath && setupScript) {
+        setPendingPullRequestSetupRequest({
+          threadId: targetThreadId,
+          worktreePath: input.worktreePath,
+          scriptId: setupScript.id,
+        });
+      } else {
+        setPendingPullRequestSetupRequest(null);
+      }
     },
-    [openOrReuseProjectDraftThread],
+    [activeProject, openOrReuseProjectDraftThread],
   );
 
   useEffect(() => {
@@ -651,17 +678,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
   );
   const selectedPromptEffort = composerProviderState.promptEffort;
   const selectedModelOptionsForDispatch = composerProviderState.modelOptionsForDispatch;
-  const providerOptionsForDispatch = useMemo(() => {
-    if (!settings.codexBinaryPath && !settings.codexHomePath) {
-      return undefined;
-    }
-    return {
-      codex: {
-        ...(settings.codexBinaryPath ? { binaryPath: settings.codexBinaryPath } : {}),
-        ...(settings.codexHomePath ? { homePath: settings.codexHomePath } : {}),
-      },
-    };
-  }, [settings.codexBinaryPath, settings.codexHomePath]);
+  const providerOptionsForDispatch = useMemo(() => getProviderStartOptions(settings), [settings]);
   const selectedModelForPicker = selectedModel;
   const modelOptionsByProvider = useMemo(
     () => getCustomModelOptionsByProvider(settings),
@@ -1445,6 +1462,45 @@ export default function ChatView({ threadId }: ChatViewProps) {
       useCompactTerminalPrompt,
     ],
   );
+  useEffect(() => {
+    if (!pendingPullRequestSetupRequest || !activeProject || !activeThreadId || !activeThread) {
+      return;
+    }
+    if (pendingPullRequestSetupRequest.threadId !== activeThreadId) {
+      return;
+    }
+    if (activeThread.worktreePath !== pendingPullRequestSetupRequest.worktreePath) {
+      return;
+    }
+
+    const setupScript =
+      activeProject.scripts.find(
+        (script) => script.id === pendingPullRequestSetupRequest.scriptId,
+      ) ?? null;
+    setPendingPullRequestSetupRequest(null);
+    if (!setupScript) {
+      return;
+    }
+
+    void runProjectScript(setupScript, {
+      cwd: pendingPullRequestSetupRequest.worktreePath,
+      worktreePath: pendingPullRequestSetupRequest.worktreePath,
+      rememberAsLastInvoked: false,
+    }).catch((error) => {
+      toastManager.add({
+        type: "error",
+        title: "Failed to run setup script.",
+        description: error instanceof Error ? error.message : "An error occurred.",
+      });
+    });
+  }, [
+    activeProject,
+    activeThread,
+    activeThreadId,
+    pendingPullRequestSetupRequest,
+    runProjectScript,
+  ]);
+
   const persistProjectScripts = useCallback(
     async (input: {
       projectId: ProjectId;
@@ -3981,7 +4037,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
               >
                 <div
                   className={cn(
-                    "rounded-[20px] border bg-card transition-colors duration-200 focus-within:border-ring/45",
+                    "rounded-[20px] border bg-card transition-colors duration-200 has-focus-visible:border-ring/45",
                     isDragOverComposer ? "border-primary/70 bg-accent/30" : "border-border",
                     composerProviderState.composerSurfaceClassName,
                   )}
@@ -4349,6 +4405,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
                         {isComposerFooterCompact && useCompactTerminalPrompt
                           ? compactComposerControlsMenu
                           : null}
+                        {activeContextWindow ? (
+                          <ContextWindowMeter usage={activeContextWindow} />
+                        ) : null}
                         {isPreparingWorktree ? (
                           <span className="text-muted-foreground/70 text-xs">
                             Preparing worktree...
@@ -4451,7 +4510,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
                           ) : (
                             <button
                               type="submit"
-                              className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/90 text-primary-foreground transition-all duration-150 hover:bg-primary hover:scale-105 disabled:opacity-30 disabled:hover:scale-100 sm:h-8 sm:w-8"
+                              className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/90 text-primary-foreground transition-all duration-150 enabled:cursor-pointer hover:bg-primary hover:scale-105 disabled:pointer-events-none disabled:opacity-30 disabled:hover:scale-100 sm:h-8 sm:w-8"
                               disabled={
                                 isSendBusy || isConnecting || !composerSendState.hasSendableContent
                               }
