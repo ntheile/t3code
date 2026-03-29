@@ -14,7 +14,15 @@ import {
   TriangleAlertIcon,
 } from "lucide-react";
 import { ProjectColorPicker } from "./ProjectColorPicker";
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent,
+  type PointerEvent,
+} from "react";
 import {
   DndContext,
   type DragCancelEvent,
@@ -97,6 +105,7 @@ import { isNonEmpty as isNonEmptyString } from "effect/String";
 import {
   sortSidebarProjectResults,
   sortThreadsForSidebar,
+  isContextMenuPointerDown,
   resolveProjectStatusIndicator,
   resolveSidebarNewThreadEnvMode,
   resolveThreadRowClassName,
@@ -357,6 +366,7 @@ export default function Sidebar() {
   const renamingInputRef = useRef<HTMLInputElement | null>(null);
   const dragInProgressRef = useRef(false);
   const suppressProjectClickAfterDragRef = useRef(false);
+  const suppressProjectClickForContextMenuRef = useRef(false);
   const [desktopUpdateState, setDesktopUpdateState] = useState<DesktopUpdateState | null>(null);
   const [sidebarFilter, setSidebarFilter] = useLocalStorage(
     SIDEBAR_FILTER_STORAGE_KEY,
@@ -1301,12 +1311,33 @@ export default function Sidebar() {
     [isThreadSortManual, persistThreadOrder, threads],
   );
 
-  const handleProjectTitlePointerDownCapture = useCallback(() => {
-    suppressProjectClickAfterDragRef.current = false;
-  }, []);
+  const handleProjectTitlePointerDownCapture = useCallback(
+    (event: PointerEvent<HTMLButtonElement>) => {
+      suppressProjectClickForContextMenuRef.current = false;
+      if (
+        isContextMenuPointerDown({
+          button: event.button,
+          ctrlKey: event.ctrlKey,
+          isMac: isMacPlatform(navigator.platform),
+        })
+      ) {
+        // Keep context-menu gestures from arming the sortable drag sensor.
+        event.stopPropagation();
+      }
+
+      suppressProjectClickAfterDragRef.current = false;
+    },
+    [],
+  );
 
   const handleProjectTitleClick = useCallback(
     (event: React.MouseEvent<HTMLButtonElement>, projectId: ProjectId) => {
+      if (suppressProjectClickForContextMenuRef.current) {
+        suppressProjectClickForContextMenuRef.current = false;
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
       if (dragInProgressRef.current) {
         event.preventDefault();
         event.stopPropagation();
@@ -1949,6 +1980,7 @@ export default function Sidebar() {
                               onKeyDown={(event) => handleProjectTitleKeyDown(event, project.id)}
                               onContextMenu={(event) => {
                                 event.preventDefault();
+                                suppressProjectClickForContextMenuRef.current = true;
                                 void handleProjectContextMenu(project.id, {
                                   x: event.clientX,
                                   y: event.clientY,

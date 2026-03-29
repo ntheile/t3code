@@ -7,6 +7,7 @@ import {
   getVisibleThreadsForProject,
   getProjectSortTimestamp,
   hasUnseenCompletion,
+  isContextMenuPointerDown,
   resolveProjectStatusIndicator,
   resolveSidebarNewThreadEnvMode,
   resolveThreadRowClassName,
@@ -130,6 +131,38 @@ describe("resolveSidebarNewThreadEnvMode", () => {
         defaultEnvMode: "worktree",
       }),
     ).toBe("local");
+  });
+});
+
+describe("isContextMenuPointerDown", () => {
+  it("detects right-click context menus", () => {
+    expect(
+      isContextMenuPointerDown({
+        button: 2,
+        ctrlKey: false,
+        isMac: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("detects macOS control-click context menus", () => {
+    expect(
+      isContextMenuPointerDown({
+        button: 0,
+        ctrlKey: true,
+        isMac: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("does not treat normal left clicks as context menus", () => {
+    expect(
+      isContextMenuPointerDown({
+        button: 0,
+        ctrlKey: false,
+        isMac: true,
+      }),
+    ).toBe(false);
   });
 });
 

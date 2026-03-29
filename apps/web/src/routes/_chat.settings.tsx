@@ -160,20 +160,33 @@ const INSTALL_PROVIDER_SETTINGS: readonly InstallProviderSettings[] = [
   },
 ] as const;
 
+function SettingsScopeBadge({ scope }: { scope: "server" | "device" }) {
+  return (
+    <span className="rounded-full border border-border bg-background px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
+      {scope === "server" ? "Server" : "This device"}
+    </span>
+  );
+}
+
 function SettingsSection({
   id,
   title,
+  scope,
   children,
 }: {
   id?: string;
   title: string;
+  scope?: "server" | "device";
   children: ReactNode;
 }) {
   return (
     <section id={id} className="scroll-mt-4 space-y-3">
-      <h2 className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
-        {title}
-      </h2>
+      <div className="flex items-center gap-2">
+        <h2 className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+          {title}
+        </h2>
+        {scope ? <SettingsScopeBadge scope={scope} /> : null}
+      </div>
       <div className="relative overflow-hidden rounded-2xl border bg-card not-dark:bg-clip-padding text-card-foreground shadow-xs/5 before:pointer-events-none before:absolute before:inset-0 before:rounded-[calc(var(--radius-2xl)-1px)] before:shadow-[0_1px_--theme(--color-black/4%)] dark:before:shadow-[0_-1px_--theme(--color-white/6%)]">
         {children}
       </div>
@@ -596,17 +609,31 @@ function SettingsRouteView() {
                     Settings
                   </h1>
                   <p className="text-sm text-muted-foreground">
-                    Configure app-level preferences for this device.
+                    Configure shared runtime settings and device-local preferences.
                   </p>
                 </header>
               ) : null}
+
+              <div className="flex flex-wrap items-start gap-3 rounded-2xl border border-border/70 bg-card px-4 py-3 text-xs text-muted-foreground">
+                <div className="flex items-center gap-2">
+                  <SettingsScopeBadge scope="server" />
+                  <span>Applies across tabs and new sessions on this server.</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <SettingsScopeBadge scope="device" />
+                  <span>Stored only in this browser or desktop app.</span>
+                </div>
+              </div>
 
               <section
                 id="appearance"
                 className="scroll-mt-4 rounded-2xl border border-border bg-card p-5"
               >
-                <div className="mb-4">
+                <div className="mb-4 flex items-center gap-2">
                   <h2 className="text-sm font-medium text-foreground">Appearance</h2>
+                  <SettingsScopeBadge scope="device" />
+                </div>
+                <div className="-mt-3 mb-4">
                   <p className="mt-1 text-xs text-muted-foreground">
                     Choose how T3 Code looks across the app.
                   </p>
@@ -844,8 +871,11 @@ function SettingsRouteView() {
                 id="remote-access"
                 className="scroll-mt-4 rounded-2xl border border-border bg-card p-5"
               >
-                <div className="mb-4">
+                <div className="mb-4 flex items-center gap-2">
                   <h2 className="text-sm font-medium text-foreground">Execution Targets</h2>
+                  <SettingsScopeBadge scope="server" />
+                </div>
+                <div className="-mt-3 mb-4">
                   <p className="mt-1 text-xs text-muted-foreground">
                     Register remote machines for thread execution, remote Git, and provider startup.
                   </p>
@@ -1043,8 +1073,11 @@ function SettingsRouteView() {
               </section>
 
               <section className="rounded-2xl border border-border bg-card p-5">
-                <div className="mb-4">
+                <div className="mb-4 flex items-center gap-2">
                   <h2 className="text-sm font-medium text-foreground">Port Forwards</h2>
+                  <SettingsScopeBadge scope="server" />
+                </div>
+                <div className="-mt-3 mb-4">
                   <p className="mt-1 text-xs text-muted-foreground">
                     Open browser-facing tunnels to services running on a registered target.
                   </p>
@@ -1188,8 +1221,11 @@ function SettingsRouteView() {
                 id="providers"
                 className="scroll-mt-4 rounded-2xl border border-border bg-card p-5"
               >
-                <div className="mb-4">
+                <div className="mb-4 flex items-center gap-2">
                   <h2 className="text-sm font-medium text-foreground">Provider installs</h2>
+                  <SettingsScopeBadge scope="server" />
+                </div>
+                <div className="-mt-3 mb-4">
                   <p className="mt-1 text-xs text-muted-foreground">
                     These overrides apply to new sessions and let you use non-default Codex or
                     Claude installs.
@@ -1334,7 +1370,7 @@ function SettingsRouteView() {
                 </div>
               </section>
 
-              <SettingsSection id="models" title="Models">
+              <SettingsSection id="models" title="Models" scope="server">
                 <SettingsRow
                   title="Git writing model"
                   description="Used for generated commit messages, PR titles, and branch names."
@@ -1489,10 +1525,15 @@ function SettingsRouteView() {
                 id="threads"
                 className="scroll-mt-4 rounded-2xl border border-border bg-card p-5"
               >
-                <div className="mb-4">
+                <div className="mb-4 flex items-center gap-2">
                   <h2 className="text-sm font-medium text-foreground">Threads</h2>
+                  <SettingsScopeBadge scope="server" />
+                  <SettingsScopeBadge scope="device" />
+                </div>
+                <div className="-mt-3 mb-4">
                   <p className="mt-1 text-xs text-muted-foreground">
-                    Choose the default workspace mode for newly created draft threads.
+                    New-thread defaults are shared on this server. Archive confirmation stays local
+                    to this device.
                   </p>
                 </div>
 
@@ -1566,9 +1607,12 @@ function SettingsRouteView() {
               </section>
 
               <section id="archived" className="scroll-mt-4 space-y-3">
-                <h2 className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
-                  Archived
-                </h2>
+                <div className="flex items-center gap-2">
+                  <h2 className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+                    Archived
+                  </h2>
+                  <SettingsScopeBadge scope="server" />
+                </div>
                 <ArchivedThreadsSection />
               </section>
 
@@ -1576,8 +1620,11 @@ function SettingsRouteView() {
                 id="responses"
                 className="scroll-mt-4 rounded-2xl border border-border bg-card p-5"
               >
-                <div className="mb-4">
+                <div className="mb-4 flex items-center gap-2">
                   <h2 className="text-sm font-medium text-foreground">Responses</h2>
+                  <SettingsScopeBadge scope="server" />
+                </div>
+                <div className="-mt-3 mb-4">
                   <p className="mt-1 text-xs text-muted-foreground">
                     Control how assistant output is rendered during a turn.
                   </p>
@@ -1622,8 +1669,11 @@ function SettingsRouteView() {
                 id="voice"
                 className="scroll-mt-4 rounded-2xl border border-border bg-card p-5"
               >
-                <div className="mb-4">
+                <div className="mb-4 flex items-center gap-2">
                   <h2 className="text-sm font-medium text-foreground">Voice</h2>
+                  <SettingsScopeBadge scope="device" />
+                </div>
+                <div className="-mt-3 mb-4">
                   <p className="mt-1 text-xs text-muted-foreground">
                     Configure realtime voice input and spoken assistant readback for this device.
                   </p>
@@ -1979,7 +2029,7 @@ function SettingsRouteView() {
                 </div>
               </section>
 
-              <SettingsSection id="advanced" title="Advanced">
+              <SettingsSection id="advanced" title="Advanced" scope="device">
                 <SettingsRow
                   title="Keybindings"
                   description="Open the persisted `keybindings.json` file to edit advanced bindings directly."
