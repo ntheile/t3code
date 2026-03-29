@@ -214,6 +214,7 @@ describe("AppSettingsSchema", () => {
       codexHomePath: "",
       defaultThreadEnvMode: "local",
       confirmThreadDelete: false,
+      diffWordWrap: false,
       enableAssistantStreaming: false,
       voiceEnabled: true,
       voiceInputEnabled: true,
