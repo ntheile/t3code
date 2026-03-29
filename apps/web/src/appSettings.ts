@@ -279,6 +279,13 @@ export function getCustomModelOptionsByProvider(
   };
 }
 
+export function getGitTextGenerationModelOptions(
+  settings: Pick<AppSettings, CustomModelSettingsKey>,
+): ReadonlyArray<{ slug: string; name: string }> {
+  const modelOptionsByProvider = getCustomModelOptionsByProvider(settings);
+  return [...modelOptionsByProvider.codex, ...modelOptionsByProvider.claudeAgent];
+}
+
 export function getProviderStartOptions(
   settings: Pick<AppSettings, "claudeBinaryPath" | "codexBinaryPath" | "codexHomePath">,
 ): ProviderStartOptions | undefined {
