@@ -560,7 +560,15 @@ export default function Sidebar() {
         const description =
           error instanceof Error ? error.message : "An error occurred while adding the project.";
         setIsAddingProject(false);
-        setAddProjectError(description);
+        if (shouldBrowseForProjectImmediately) {
+          toastManager.add({
+            type: "error",
+            title: "Failed to add project",
+            description,
+          });
+        } else {
+          setAddProjectError(description);
+        }
         return;
       }
       finishAddingProject();
@@ -571,6 +579,7 @@ export default function Sidebar() {
       isAddingProject,
       projects,
       appSettings.defaultThreadEnvMode,
+      shouldBrowseForProjectImmediately,
     ],
   );
 
