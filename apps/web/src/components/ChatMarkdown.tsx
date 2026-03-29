@@ -6,6 +6,7 @@ import React, {
   isValidElement,
   use,
   useEffect,
+  useEffectEvent,
   memo,
   useMemo,
   useState,
@@ -309,6 +310,10 @@ function ChatMarkdown({
   const { resolvedTheme } = useTheme();
   const diffThemeName = resolveDiffThemeName(resolvedTheme);
   const [optimisticPendingParagraph, setOptimisticPendingParagraph] = useState<string | null>(null);
+  const hasPlayParagraphHandler = onPlayParagraph != null;
+  const handlePlayParagraph = useEffectEvent((paragraphIndex: number, paragraphText: string) => {
+    onPlayParagraph?.(paragraphIndex, paragraphText);
+  });
 
   useEffect(() => {
     if (pendingPlayParagraph) {
@@ -338,7 +343,7 @@ function ChatMarkdown({
     };
     const renderParagraphPlayButton = (paragraphIndex: number, paragraphText: string) => {
       const normalizedParagraph = nodeToPlainText(paragraphText).trim();
-      if (!onPlayParagraph || normalizedParagraph.length === 0) {
+      if (normalizedParagraph.length === 0 || !hasPlayParagraphHandler) {
         return null;
       }
       const isPending =
@@ -367,7 +372,7 @@ function ChatMarkdown({
             if (!showPause && !showResume) {
               setOptimisticPendingParagraph(normalizedParagraph);
             }
-            onPlayParagraph(paragraphIndex, normalizedParagraph);
+            handlePlayParagraph(paragraphIndex, normalizedParagraph);
           }}
           aria-label={
             showPending
@@ -589,11 +594,11 @@ function ChatMarkdown({
     cwd,
     diffThemeName,
     isStreaming,
-    onPlayParagraph,
     optimisticPendingParagraph,
     pendingPlayParagraph,
     pendingPlayParagraphIndex,
     resolvedTheme,
+    hasPlayParagraphHandler,
   ]);
 
   return (
